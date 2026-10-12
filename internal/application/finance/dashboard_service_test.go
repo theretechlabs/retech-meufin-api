@@ -12,10 +12,16 @@ import (
 type fakeDashboardRepo struct {
 	opening int64
 	months  []dom.CashFlowMonth
+
+	entrySummaryCalls int
 }
 
 func (f *fakeDashboardRepo) Summary(_ context.Context, _ uuid.UUID, _, _ int, _ *uuid.UUID) (*dom.DashboardSummary, error) {
 	return nil, nil
+}
+func (f *fakeDashboardRepo) EntrySummary(_ context.Context, _ uuid.UUID, kind dom.Kind, year, month int, _ *uuid.UUID) (*dom.EntrySummary, error) {
+	f.entrySummaryCalls++
+	return &dom.EntrySummary{Kind: kind, Year: year, Month: month}, nil
 }
 func (f *fakeDashboardRepo) MonthlySeries(_ context.Context, _ uuid.UUID, _ int, _ *uuid.UUID) ([]dom.MonthlyPoint, error) {
 	return nil, nil
@@ -71,5 +77,46 @@ func TestCashFlowAcumulaSaldo(t *testing.T) {
 	}
 	if cf.OpeningBalanceCents+net != cf.ClosingBalanceCents {
 		t.Errorf("identidade violada: %d + %d != %d", cf.OpeningBalanceCents, net, cf.ClosingBalanceCents)
+	}
+}
+
+// O resumo por kind rejeita entrada inválida ANTES de tocar o banco: kind
+// desconhecido, mês fora de 1..12, ano fora da janela. Entrada válida passa
+// direto para o repositório.
+func TestEntrySummaryValidaEntrada(t *testing.T) {
+	repo := &fakeDashboardRepo{}
+	svc := NewFinanceDashboardService(repo)
+	ws := uuid.New()
+
+	bad := []struct {
+		name  string
+		kind  dom.Kind
+		year  int
+		month int
+	}{
+		{"kind vazio", "", 2026, 10},
+		{"kind desconhecido", "transfer", 2026, 10},
+		{"mês zero", dom.KindDebit, 2026, 0},
+		{"mês 13", dom.KindDebit, 2026, 13},
+		{"ano antigo", dom.KindDebit, 1999, 10},
+	}
+	for _, tc := range bad {
+		if _, err := svc.EntrySummary(context.Background(), ws, tc.kind, tc.year, tc.month, nil); err == nil {
+			t.Errorf("%s: quer erro de validação, veio nil", tc.name)
+		}
+	}
+	if repo.entrySummaryCalls != 0 {
+		t.Fatalf("repositório chamado %d vezes com entrada inválida", repo.entrySummaryCalls)
+	}
+
+	got, err := svc.EntrySummary(context.Background(), ws, dom.KindCredit, 2026, 10, nil)
+	if err != nil {
+		t.Fatalf("entrada válida: %v", err)
+	}
+	if got.Kind != dom.KindCredit || got.Year != 2026 || got.Month != 10 {
+		t.Errorf("resumo = %+v, quer kind=credit 2026/10", got)
+	}
+	if repo.entrySummaryCalls != 1 {
+		t.Errorf("repositório chamado %d vezes, quer 1", repo.entrySummaryCalls)
 	}
 }
