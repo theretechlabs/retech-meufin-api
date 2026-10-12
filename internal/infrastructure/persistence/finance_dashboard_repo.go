@@ -149,6 +149,79 @@ func (r *FinanceDashboardRepository) Summary(ctx context.Context, workspaceID uu
 	return out, nil
 }
 
+// EntrySummary resume um kind num mês nos dois eixos (regras em
+// dom.EntrySummary). Duas consultas, uma por eixo, porque um mesmo
+// lançamento pode cair em meses diferentes em cada um.
+func (r *FinanceDashboardRepository) EntrySummary(ctx context.Context, workspaceID uuid.UUID, kind dom.Kind, year, month int, familyMemberID *uuid.UUID) (*dom.EntrySummary, error) {
+	start := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	// Eixo COMPETÊNCIA: contas que vencem no mês. Compensação entra — a
+	// obrigação foi liquidada, mesmo sem caixa.
+	type dueRow struct {
+		TotalCents int64
+		TotalCount int64
+		PaidCents  int64
+		PaidCount  int64
+		OpenCents  int64
+		OpenCount  int64
+	}
+	var due dueRow
+	dq := r.db.WithContext(ctx).
+		Table("financial_entries").
+		Select(`
+			COALESCE(SUM(amount_cents), 0) AS total_cents,
+			COUNT(*) AS total_count,
+			COALESCE(SUM(CASE WHEN status = 'realizada' THEN COALESCE(paid_amount_cents, amount_cents) ELSE 0 END), 0) AS paid_cents,
+			COALESCE(SUM(CASE WHEN status = 'realizada' THEN 1 ELSE 0 END), 0) AS paid_count,
+			COALESCE(SUM(CASE WHEN status = 'prevista' THEN amount_cents ELSE 0 END), 0) AS open_cents,
+			COALESCE(SUM(CASE WHEN status = 'prevista' THEN 1 ELSE 0 END), 0) AS open_count`).
+		Where("workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL AND kind = ? AND status <> 'cancelada'", workspaceID, string(kind)).
+		Where("due_date >= ? AND due_date < ?", start, end)
+	if familyMemberID != nil {
+		dq = dq.Where("family_member_id = ?", *familyMemberID)
+	}
+	if err := dq.Scan(&due).Error; err != nil {
+		return nil, mapFinanceErr(err)
+	}
+
+	// Eixo CAIXA: mesma cláusula do realizado da dashboard (Summary), para
+	// os dois nunca divergirem.
+	type cashRow struct {
+		PaidCents int64
+		PaidCount int64
+	}
+	var cash cashRow
+	cq := r.db.WithContext(ctx).
+		Table("financial_entries").
+		Select(`
+			COALESCE(SUM(COALESCE(paid_amount_cents, amount_cents)), 0) AS paid_cents,
+			COUNT(*) AS paid_count`).
+		Where("workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL AND kind = ? AND status = 'realizada'", workspaceID, string(kind)).
+		Where(nonCashExcluded).
+		Where("COALESCE(DATE(paid_at), due_date) >= ? AND COALESCE(DATE(paid_at), due_date) < ?", start, end)
+	if familyMemberID != nil {
+		cq = cq.Where("family_member_id = ?", *familyMemberID)
+	}
+	if err := cq.Scan(&cash).Error; err != nil {
+		return nil, mapFinanceErr(err)
+	}
+
+	return &dom.EntrySummary{
+		Kind:          kind,
+		Year:          year,
+		Month:         month,
+		DueTotalCents: due.TotalCents,
+		DueTotalCount: due.TotalCount,
+		DuePaidCents:  due.PaidCents,
+		DuePaidCount:  due.PaidCount,
+		DueOpenCents:  due.OpenCents,
+		DueOpenCount:  due.OpenCount,
+		CashPaidCents: cash.PaidCents,
+		CashPaidCount: cash.PaidCount,
+	}, nil
+}
+
 // MonthlySeries agrega o ano inteiro num scan só, agrupado por mês.
 // CategoryEntries materializa a barra do "Pra onde foi o dinheiro": os
 // lançamentos por trás da agregação de categorias do Summary. A cláusula é

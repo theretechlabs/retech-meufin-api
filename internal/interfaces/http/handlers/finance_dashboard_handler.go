@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	app "github.com/retechfin/retechfin-api/internal/application/finance"
+	dom "github.com/retechfin/retechfin-api/internal/domain/finance"
 	"github.com/retechfin/retechfin-api/internal/interfaces/http/errrespond"
 	"github.com/retechfin/retechfin-api/internal/interfaces/http/middleware"
 )
@@ -217,6 +218,73 @@ func (h *FinanceDashboardHandler) CategoryEntries(c *gin.Context) {
 		"items":       items,
 		"total":       len(items),
 		"total_cents": res.TotalCents,
+	})
+}
+
+// EntrySummary responde GET /finance/dashboard/entries-summary?kind=&year=&month=&family_member_id=.
+// Resumo de um kind no mês nos dois eixos (ver dom.EntrySummary):
+//
+//	due  — competência (vencem no mês): total / pago / a pagar, com contagens
+//	cash — caixa (pagos no mês): o mesmo número que a dashboard chama de realizado
+//
+// kind obrigatório (debit|credit). year/month default: mês corrente.
+func (h *FinanceDashboardHandler) EntrySummary(c *gin.Context) {
+	ws, ok := middleware.WorkspaceID(c)
+	if !ok {
+		errrespond.Message(c, http.StatusBadRequest, errrespond.CodeWorkspaceRequired, "workspace inválido")
+		return
+	}
+	kind := strings.TrimSpace(c.Query("kind"))
+	if kind == "" {
+		errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "kind obrigatório (debit|credit)")
+		return
+	}
+	now := time.Now().UTC()
+	year, month := now.Year(), int(now.Month())
+	var err error
+	if v := c.Query("year"); v != "" {
+		if year, err = strconv.Atoi(v); err != nil {
+			errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "year inválido")
+			return
+		}
+	}
+	if v := c.Query("month"); v != "" {
+		if month, err = strconv.Atoi(v); err != nil {
+			errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "month inválido")
+			return
+		}
+	}
+	var familyMemberID *uuid.UUID
+	if v := c.Query("family_member_id"); v != "" {
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "family_member_id inválido")
+			return
+		}
+		familyMemberID = &id
+	}
+
+	s, err := h.svc.EntrySummary(c.Request.Context(), ws, dom.Kind(kind), year, month, familyMemberID)
+	if err != nil {
+		errrespond.Write(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"kind":  string(s.Kind),
+		"year":  s.Year,
+		"month": s.Month,
+		"due": gin.H{
+			"total_cents": s.DueTotalCents,
+			"total_count": s.DueTotalCount,
+			"paid_cents":  s.DuePaidCents,
+			"paid_count":  s.DuePaidCount,
+			"open_cents":  s.DueOpenCents,
+			"open_count":  s.DueOpenCount,
+		},
+		"cash": gin.H{
+			"paid_cents": s.CashPaidCents,
+			"paid_count": s.CashPaidCount,
+		},
 	})
 }
 

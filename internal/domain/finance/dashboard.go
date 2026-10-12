@@ -87,9 +87,47 @@ type CashFlow struct {
 	ClosingBalanceCents int64
 }
 
+// EntrySummary é o resumo de um tipo de lançamento (débito ou crédito) num
+// mês, nos DOIS eixos ao mesmo tempo. Cada tela escolhe o eixo que lhe cabe
+// e os dois saem da mesma consulta — nunca somados no browser, nunca
+// limitados à página visível.
+//
+// Eixo COMPETÊNCIA (due_date dentro do mês): "contas do mês". É o que a
+// tela de Despesas/Receitas lista, então os cards dela seguem este eixo.
+//   - DueTotal: prevista + realizada (cancelada fora). Compensação ENTRA:
+//     a obrigação existia e foi liquidada, mesmo sem caixa.
+//   - DuePaid: realizada, pelo VALOR PAGO (desconto/juros contam; isenção
+//     total conta zero).
+//   - DueOpen: prevista, pelo valor do lançamento.
+//
+// Eixo CAIXA (paid_at dentro do mês, fallback due_date para liquidações
+// antigas sem data): "saiu/entrou do caixa no mês". É o que a dashboard
+// mostra como realizado. Compensação FICA FORA: nenhum centavo passou.
+//
+// Invariante: DueTotal == DashboardSummary.ExpenseExpectedCents (ou Income)
+// e DueOpen == PayableCents (ou Receivable) para o mesmo kind/mês/membro,
+// EXCETO pela compensação, que a dashboard exclui e este eixo inclui.
+type EntrySummary struct {
+	Kind  Kind
+	Year  int
+	Month int
+
+	DueTotalCents int64
+	DueTotalCount int64
+	DuePaidCents  int64
+	DuePaidCount  int64
+	DueOpenCents  int64
+	DueOpenCount  int64
+
+	CashPaidCents int64
+	CashPaidCount int64
+}
+
 // FinanceDashboardRepository agrega lançamentos em SQL (multitenant).
 type FinanceDashboardRepository interface {
 	Summary(ctx context.Context, workspaceID uuid.UUID, year, month int, familyMemberID *uuid.UUID) (*DashboardSummary, error)
+	// EntrySummary resume um kind num mês nos dois eixos (ver EntrySummary).
+	EntrySummary(ctx context.Context, workspaceID uuid.UUID, kind Kind, year, month int, familyMemberID *uuid.UUID) (*EntrySummary, error)
 	MonthlySeries(ctx context.Context, workspaceID uuid.UUID, year int, familyMemberID *uuid.UUID) ([]MonthlyPoint, error)
 	// CategoryEntries devolve TODOS os lançamentos que compõem a barra de uma
 	// categoria no mês (drill-down) — mesma cláusula da agregação do Summary,

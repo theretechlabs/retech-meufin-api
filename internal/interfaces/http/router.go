@@ -374,6 +374,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		finance.GET("/dashboard/monthly", finDashH.Monthly)
 		finance.GET("/dashboard/categories/:slug/entries", finDashH.CategoryEntries)
 		finance.GET("/dashboard/cashflow", finDashH.CashFlow)
+		finance.GET("/dashboard/entries-summary", finDashH.EntrySummary)
 
 		finance.POST("/documents", finDocH.Upload)
 		finance.GET("/documents", finDocH.List)

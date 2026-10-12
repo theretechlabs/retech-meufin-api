@@ -28,6 +28,21 @@ func (s *FinanceDashboardService) Summary(ctx context.Context, workspaceID uuid.
 	return s.repo.Summary(ctx, workspaceID, year, month, familyMemberID)
 }
 
+// EntrySummary resume um kind num mês nos dois eixos. É a fonte dos cards
+// das telas de Despesas e Receitas — elas NÃO somam a página no browser.
+func (s *FinanceDashboardService) EntrySummary(ctx context.Context, workspaceID uuid.UUID, kind dom.Kind, year, month int, familyMemberID *uuid.UUID) (*dom.EntrySummary, error) {
+	if kind != dom.KindDebit && kind != dom.KindCredit {
+		return nil, &dom.ValidationError{Msg: "kind inválido"}
+	}
+	if year < 2000 || year > 2100 {
+		return nil, &dom.ValidationError{Msg: "year inválido"}
+	}
+	if month < 1 || month > 12 {
+		return nil, &dom.ValidationError{Msg: "month inválido"}
+	}
+	return s.repo.EntrySummary(ctx, workspaceID, kind, year, month, familyMemberID)
+}
+
 // MonthlySeries retorna sempre 12 pontos (meses sem lançamentos vêm zerados).
 func (s *FinanceDashboardService) MonthlySeries(ctx context.Context, workspaceID uuid.UUID, year int, familyMemberID *uuid.UUID) ([]dom.MonthlyPoint, error) {
 	if year < 2000 || year > 2100 {
