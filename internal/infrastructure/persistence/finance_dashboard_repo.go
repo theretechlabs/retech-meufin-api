@@ -22,6 +22,9 @@ type FinanceDashboardRepository struct {
 const nonCashExcluded = "COALESCE(payment_method, '') <> 'compensacao'"
 const nonCashExcludedE = "COALESCE(e.payment_method, '') <> 'compensacao'"
 
+// lateChargesExpr soma multa e juros pagos de um lançamento (nulos = zero).
+const lateChargesExpr = "(COALESCE(late_fee_cents, 0) + COALESCE(late_interest_cents, 0))"
+
 func NewFinanceDashboardRepository(db *gorm.DB) *FinanceDashboardRepository {
 	return &FinanceDashboardRepository{db: db}
 }
@@ -62,15 +65,19 @@ func (r *FinanceDashboardRepository) Summary(ctx context.Context, workspaceID uu
 	// data): realizado — o dinheiro saiu quando saiu. É o que faz a parcela
 	// antecipada aparecer no mês do pagamento, não no do boleto.
 	type realizedRow struct {
-		IncomeRealized  int64
-		ExpenseRealized int64
+		IncomeRealized          int64
+		ExpenseRealized         int64
+		ExpenseLateChargesCents int64
+		ExpenseLateChargesCount int64
 	}
 	var realized realizedRow
 	rq := r.db.WithContext(ctx).
 		Table("financial_entries").
 		Select(`
 			COALESCE(SUM(CASE WHEN kind = 'credit' THEN COALESCE(paid_amount_cents, amount_cents) ELSE 0 END), 0) AS income_realized,
-			COALESCE(SUM(CASE WHEN kind = 'debit' THEN COALESCE(paid_amount_cents, amount_cents) ELSE 0 END), 0) AS expense_realized`).
+			COALESCE(SUM(CASE WHEN kind = 'debit' THEN COALESCE(paid_amount_cents, amount_cents) ELSE 0 END), 0) AS expense_realized,
+			COALESCE(SUM(CASE WHEN kind = 'debit' THEN `+lateChargesExpr+` ELSE 0 END), 0) AS expense_late_charges_cents,
+			COALESCE(SUM(CASE WHEN kind = 'debit' AND `+lateChargesExpr+` > 0 THEN 1 ELSE 0 END), 0) AS expense_late_charges_count`).
 		Where("workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL AND status = 'realizada'", workspaceID).
 		Where(nonCashExcluded).
 		Where("COALESCE(DATE(paid_at), due_date) >= ? AND COALESCE(DATE(paid_at), due_date) < ?", start, end)
@@ -136,7 +143,10 @@ func (r *FinanceDashboardRepository) Summary(ctx context.Context, workspaceID uu
 		ExpenseExpectedCents: expected.ExpenseExpected,
 		ReceivableCents:      expected.Receivable,
 		PayableCents:         expected.Payable,
-		Categories:           make([]dom.CategoryTotal, len(cats)),
+
+		ExpenseLateChargesCents: realized.ExpenseLateChargesCents,
+		ExpenseLateChargesCount: realized.ExpenseLateChargesCount,
+		Categories:              make([]dom.CategoryTotal, len(cats)),
 		FutureInstallments: dom.FutureInstallments{
 			TotalCents:  inst.Total,
 			Count:       inst.Count,
@@ -159,12 +169,14 @@ func (r *FinanceDashboardRepository) EntrySummary(ctx context.Context, workspace
 	// Eixo COMPETÊNCIA: contas que vencem no mês. Compensação entra — a
 	// obrigação foi liquidada, mesmo sem caixa.
 	type dueRow struct {
-		TotalCents int64
-		TotalCount int64
-		PaidCents  int64
-		PaidCount  int64
-		OpenCents  int64
-		OpenCount  int64
+		TotalCents       int64
+		TotalCount       int64
+		PaidCents        int64
+		PaidCount        int64
+		OpenCents        int64
+		OpenCount        int64
+		LateChargesCents int64
+		LateChargesCount int64
 	}
 	var due dueRow
 	dq := r.db.WithContext(ctx).
@@ -175,7 +187,9 @@ func (r *FinanceDashboardRepository) EntrySummary(ctx context.Context, workspace
 			COALESCE(SUM(CASE WHEN status = 'realizada' THEN COALESCE(paid_amount_cents, amount_cents) ELSE 0 END), 0) AS paid_cents,
 			COALESCE(SUM(CASE WHEN status = 'realizada' THEN 1 ELSE 0 END), 0) AS paid_count,
 			COALESCE(SUM(CASE WHEN status = 'prevista' THEN amount_cents ELSE 0 END), 0) AS open_cents,
-			COALESCE(SUM(CASE WHEN status = 'prevista' THEN 1 ELSE 0 END), 0) AS open_count`).
+			COALESCE(SUM(CASE WHEN status = 'prevista' THEN 1 ELSE 0 END), 0) AS open_count,
+			COALESCE(SUM(CASE WHEN status = 'realizada' THEN `+lateChargesExpr+` ELSE 0 END), 0) AS late_charges_cents,
+			COALESCE(SUM(CASE WHEN status = 'realizada' AND `+lateChargesExpr+` > 0 THEN 1 ELSE 0 END), 0) AS late_charges_count`).
 		Where("workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL AND kind = ? AND status <> 'cancelada'", workspaceID, string(kind)).
 		Where("due_date >= ? AND due_date < ?", start, end)
 	if familyMemberID != nil {
@@ -188,15 +202,19 @@ func (r *FinanceDashboardRepository) EntrySummary(ctx context.Context, workspace
 	// Eixo CAIXA: mesma cláusula do realizado da dashboard (Summary), para
 	// os dois nunca divergirem.
 	type cashRow struct {
-		PaidCents int64
-		PaidCount int64
+		PaidCents        int64
+		PaidCount        int64
+		LateChargesCents int64
+		LateChargesCount int64
 	}
 	var cash cashRow
 	cq := r.db.WithContext(ctx).
 		Table("financial_entries").
 		Select(`
 			COALESCE(SUM(COALESCE(paid_amount_cents, amount_cents)), 0) AS paid_cents,
-			COUNT(*) AS paid_count`).
+			COUNT(*) AS paid_count,
+			COALESCE(SUM(`+lateChargesExpr+`), 0) AS late_charges_cents,
+			COALESCE(SUM(CASE WHEN `+lateChargesExpr+` > 0 THEN 1 ELSE 0 END), 0) AS late_charges_count`).
 		Where("workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL AND kind = ? AND status = 'realizada'", workspaceID, string(kind)).
 		Where(nonCashExcluded).
 		Where("COALESCE(DATE(paid_at), due_date) >= ? AND COALESCE(DATE(paid_at), due_date) < ?", start, end)
@@ -217,8 +235,13 @@ func (r *FinanceDashboardRepository) EntrySummary(ctx context.Context, workspace
 		DuePaidCount:  due.PaidCount,
 		DueOpenCents:  due.OpenCents,
 		DueOpenCount:  due.OpenCount,
-		CashPaidCents: cash.PaidCents,
-		CashPaidCount: cash.PaidCount,
+
+		DueLateChargesCents:  due.LateChargesCents,
+		DueLateChargesCount:  due.LateChargesCount,
+		CashPaidCents:        cash.PaidCents,
+		CashPaidCount:        cash.PaidCount,
+		CashLateChargesCents: cash.LateChargesCents,
+		CashLateChargesCount: cash.LateChargesCount,
 	}, nil
 }
 

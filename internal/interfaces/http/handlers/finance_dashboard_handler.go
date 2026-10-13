@@ -30,18 +30,21 @@ type dashboardCategoryJSON struct {
 }
 
 type dashboardSummaryJSON struct {
-	Year                 int                     `json:"year"`
-	Month                int                     `json:"month"`
-	IncomeRealizedCents  int64                   `json:"income_realized_cents"`
-	IncomeExpectedCents  int64                   `json:"income_expected_cents"`
-	ExpenseRealizedCents int64                   `json:"expense_realized_cents"`
-	ExpenseExpectedCents int64                   `json:"expense_expected_cents"`
-	BalanceRealizedCents int64                   `json:"balance_realized_cents"`
-	BalanceExpectedCents int64                   `json:"balance_expected_cents"`
-	ReceivableCents      int64                   `json:"receivable_cents"`
-	PayableCents         int64                   `json:"payable_cents"`
-	Categories           []dashboardCategoryJSON `json:"categories"`
-	FutureInstallments   struct {
+	Year                 int   `json:"year"`
+	Month                int   `json:"month"`
+	IncomeRealizedCents  int64 `json:"income_realized_cents"`
+	IncomeExpectedCents  int64 `json:"income_expected_cents"`
+	ExpenseRealizedCents int64 `json:"expense_realized_cents"`
+	ExpenseExpectedCents int64 `json:"expense_expected_cents"`
+	BalanceRealizedCents int64 `json:"balance_realized_cents"`
+	BalanceExpectedCents int64 `json:"balance_expected_cents"`
+	ReceivableCents      int64 `json:"receivable_cents"`
+	PayableCents         int64 `json:"payable_cents"`
+	// Juros e multa pagos no mês (eixo caixa, despesas) e quantos pagamentos tiveram encargo.
+	ExpenseLateChargesCents int64                   `json:"expense_late_charges_cents"`
+	ExpenseLateChargesCount int64                   `json:"expense_late_charges_count"`
+	Categories              []dashboardCategoryJSON `json:"categories"`
+	FutureInstallments      struct {
 		TotalCents  int64   `json:"total_cents"`
 		Count       int64   `json:"count"`
 		LastDueDate *string `json:"last_due_date"`
@@ -98,7 +101,10 @@ func (h *FinanceDashboardHandler) Summary(c *gin.Context) {
 		BalanceExpectedCents: sum.IncomeExpectedCents - sum.ExpenseExpectedCents,
 		ReceivableCents:      sum.ReceivableCents,
 		PayableCents:         sum.PayableCents,
-		Categories:           make([]dashboardCategoryJSON, len(sum.Categories)),
+
+		ExpenseLateChargesCents: sum.ExpenseLateChargesCents,
+		ExpenseLateChargesCount: sum.ExpenseLateChargesCount,
+		Categories:              make([]dashboardCategoryJSON, len(sum.Categories)),
 	}
 	for i := range sum.Categories {
 		resp.Categories[i] = dashboardCategoryJSON{
@@ -280,10 +286,16 @@ func (h *FinanceDashboardHandler) EntrySummary(c *gin.Context) {
 			"paid_count":  s.DuePaidCount,
 			"open_cents":  s.DueOpenCents,
 			"open_count":  s.DueOpenCount,
+
+			"late_charges_cents": s.DueLateChargesCents,
+			"late_charges_count": s.DueLateChargesCount,
 		},
 		"cash": gin.H{
 			"paid_cents": s.CashPaidCents,
 			"paid_count": s.CashPaidCount,
+
+			"late_charges_cents": s.CashLateChargesCents,
+			"late_charges_count": s.CashLateChargesCount,
 		},
 	})
 }
