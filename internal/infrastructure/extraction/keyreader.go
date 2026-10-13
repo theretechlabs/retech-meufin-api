@@ -1,12 +1,9 @@
 package extraction
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 )
 
@@ -85,15 +82,17 @@ func (a *AnthropicExtractor) ReadFiscalKey(ctx context.Context, content []byte, 
 	}
 
 	reqBody := anthropicRequest{
-		Model:     a.cfg.Model,
-		MaxTokens: 512,
+		Model: a.cfg.Model,
+		// Em modelos com thinking adaptativo (Claude 5.x) o raciocínio consome
+		// max_tokens junto com a resposta; 512 truncava antes da ferramenta.
+		MaxTokens: 4096,
 		System:    keyReaderSystemPrompt,
 		Tools: []anthropicTool{{
 			Name:        keyReaderToolName,
 			Description: "Extrai a chave de acesso (44 dígitos) impressa no cupom/nota fiscal.",
 			InputSchema: keyReaderInputSchema(),
 		}},
-		ToolChoice: &anthropicToolChoice{Type: "tool", Name: keyReaderToolName},
+		ToolChoice: autoToolChoice(),
 		Messages: []anthropicMessage{{
 			Role: "user",
 			Content: []anthropicContentBlock{
@@ -103,49 +102,16 @@ func (a *AnthropicExtractor) ReadFiscalKey(ctx context.Context, content []byte, 
 		}},
 	}
 
-	payload, err := json.Marshal(reqBody)
+	input, _, _, err := a.callTool(ctx, "keyreader", reqBody, keyReaderToolName)
 	if err != nil {
-		return "", fmt.Errorf("keyreader: montar payload: %w", err)
+		return "", err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return "", fmt.Errorf("keyreader: montar requisição: %w", err)
+	if len(input) == 0 {
+		return "", nil
 	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("keyreader: chamada à Anthropic: %w", err)
+	var out keyReaderOutput
+	if err := json.Unmarshal(input, &out); err != nil {
+		return "", fmt.Errorf("keyreader: decodificar tool: %w", err)
 	}
-	defer resp.Body.Close()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("keyreader: ler resposta: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiErr anthropicResponse
-		_ = json.Unmarshal(rawBody, &apiErr)
-		if apiErr.Error != nil {
-			return "", fmt.Errorf("keyreader: anthropic %d (%s): %s", resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
-		}
-		return "", fmt.Errorf("keyreader: anthropic status %d", resp.StatusCode)
-	}
-
-	var parsed anthropicResponse
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
-		return "", fmt.Errorf("keyreader: decodificar resposta: %w", err)
-	}
-	for _, block := range parsed.Content {
-		if block.Type == "tool_use" && block.Name == keyReaderToolName && len(block.Input) > 0 {
-			var out keyReaderOutput
-			if err := json.Unmarshal(block.Input, &out); err != nil {
-				return "", fmt.Errorf("keyreader: decodificar tool: %w", err)
-			}
-			return strings.TrimSpace(out.ChaveAcesso), nil
-		}
-	}
-	return "", nil
+	return strings.TrimSpace(out.ChaveAcesso), nil
 }

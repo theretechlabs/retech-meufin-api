@@ -168,8 +168,18 @@ type anthropicTool struct {
 }
 
 type anthropicToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+}
+
+// autoToolChoice: nunca forçar a ferramenta. Claude 5.x (Opus 5.5, Sonnet
+// 5.5, Fable 5.1) rejeita tool_choice "tool"/"any" com 400 ("not supported
+// for this model"); "auto" + instrução explícita no prompt ("Use SEMPRE a
+// ferramenta X") funciona em todos os modelos. Como "auto" não garante a
+// chamada, callTool confere a resposta e reenvia uma vez com reforço.
+func autoToolChoice() *anthropicToolChoice {
+	return &anthropicToolChoice{Type: "auto", DisableParallelToolUse: true}
 }
 
 type anthropicRequest struct {
@@ -192,6 +202,87 @@ type anthropicResponse struct {
 type anthropicAPIError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// postMessages envia a requisição à Messages API e decodifica a resposta.
+// prefix identifica o chamador nas mensagens de erro ("keyreader", ...).
+func (a *AnthropicExtractor) postMessages(ctx context.Context, prefix string, req anthropicRequest) (anthropicResponse, []byte, error) {
+	if prefix != "" {
+		prefix += ": "
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return anthropicResponse{}, nil, fmt.Errorf("%smontar payload: %w", prefix, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/v1/messages", bytes.NewReader(payload))
+	if err != nil {
+		return anthropicResponse{}, nil, fmt.Errorf("%smontar requisição: %w", prefix, err)
+	}
+	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return anthropicResponse{}, nil, fmt.Errorf("%schamada à Anthropic: %w", prefix, err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return anthropicResponse{}, nil, fmt.Errorf("%sler resposta: %w", prefix, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiErr anthropicResponse
+		_ = json.Unmarshal(rawBody, &apiErr)
+		if apiErr.Error != nil {
+			return anthropicResponse{}, rawBody, fmt.Errorf("%santhropic %d (%s): %s", prefix, resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
+		}
+		return anthropicResponse{}, rawBody, fmt.Errorf("%santhropic status %d: %s", prefix, resp.StatusCode, string(rawBody))
+	}
+	var parsed anthropicResponse
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		return anthropicResponse{}, rawBody, fmt.Errorf("%sdecodificar resposta: %w", prefix, err)
+	}
+	return parsed, rawBody, nil
+}
+
+// findToolUse devolve o input do bloco tool_use da ferramenta pedida (nil se
+// o modelo não a chamou).
+func findToolUse(parsed anthropicResponse, toolName string) json.RawMessage {
+	for _, block := range parsed.Content {
+		if block.Type == "tool_use" && block.Name == toolName && len(block.Input) > 0 {
+			return block.Input
+		}
+	}
+	return nil
+}
+
+// callTool envia a requisição e devolve o input da ferramenta esperada. Com
+// tool_choice "auto" o modelo pode responder só com texto; nesse caso reenvia
+// UMA vez com um reforço no fim da mensagem do usuário. Saída cortada por
+// max_tokens não é reenviada (o chamador decide o que fazer).
+func (a *AnthropicExtractor) callTool(ctx context.Context, prefix string, req anthropicRequest, toolName string) (json.RawMessage, anthropicResponse, []byte, error) {
+	parsed, raw, err := a.postMessages(ctx, prefix, req)
+	if err != nil {
+		return nil, parsed, raw, err
+	}
+	if input := findToolUse(parsed, toolName); len(input) > 0 || parsed.StopReason == "max_tokens" || len(req.Messages) == 0 {
+		return input, parsed, raw, nil
+	}
+
+	retry := req
+	retry.Messages = append([]anthropicMessage(nil), req.Messages...)
+	last := len(retry.Messages) - 1
+	retry.Messages[last].Content = append(
+		append([]anthropicContentBlock(nil), retry.Messages[last].Content...),
+		anthropicContentBlock{Type: "text", Text: "Responda APENAS chamando a ferramenta " + toolName + ", sem texto fora dela."},
+	)
+	parsed, raw, err = a.postMessages(ctx, prefix, retry)
+	if err != nil {
+		return nil, parsed, raw, err
+	}
+	return findToolUse(parsed, toolName), parsed, raw, nil
 }
 
 // Extract envia o documento (PDF via document, imagem via image) e solicita
@@ -224,7 +315,7 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, in ExtractInput) (Extr
 			Description: profile.ToolDescription,
 			InputSchema: profile.InputSchema,
 		}},
-		ToolChoice: &anthropicToolChoice{Type: "tool", Name: profile.ToolName},
+		ToolChoice: autoToolChoice(),
 		Messages: []anthropicMessage{{
 			Role: "user",
 			Content: []anthropicContentBlock{
@@ -234,43 +325,9 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, in ExtractInput) (Extr
 		}},
 	}
 
-	payload, err := json.Marshal(reqBody)
+	structured, parsed, rawBody, err := a.callTool(ctx, "", reqBody, profile.ToolName)
 	if err != nil {
-		return ExtractResult{}, fmt.Errorf("montar payload: %w", err)
-	}
-
-	url := a.cfg.BaseURL + "/v1/messages"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return ExtractResult{}, fmt.Errorf("montar requisição: %w", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return ExtractResult{}, fmt.Errorf("chamada à Anthropic: %w", err)
-	}
-	defer resp.Body.Close()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ExtractResult{}, fmt.Errorf("ler resposta: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiErr anthropicResponse
-		_ = json.Unmarshal(rawBody, &apiErr)
-		if apiErr.Error != nil {
-			return ExtractResult{}, fmt.Errorf("anthropic %d (%s): %s", resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
-		}
-		return ExtractResult{}, fmt.Errorf("anthropic status %d: %s", resp.StatusCode, string(rawBody))
-	}
-
-	var parsed anthropicResponse
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
-		return ExtractResult{}, fmt.Errorf("decodificar resposta: %w", err)
+		return ExtractResult{}, err
 	}
 
 	result := ExtractResult{
@@ -282,17 +339,11 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, in ExtractInput) (Extr
 		result.Model = a.cfg.Model
 	}
 
-	// Extrai o input do tool_use e um eventual texto livre.
+	result.StructuredJSON = structured
+	// Texto livre eventual (fora da ferramenta) fica disponível para auditoria.
 	for _, block := range parsed.Content {
-		switch block.Type {
-		case "tool_use":
-			if block.Name == profile.ToolName && len(block.Input) > 0 {
-				result.StructuredJSON = block.Input
-			}
-		case "text":
-			if result.Text == "" {
-				result.Text = block.Text
-			}
+		if block.Type == "text" && result.Text == "" {
+			result.Text = block.Text
 		}
 	}
 
