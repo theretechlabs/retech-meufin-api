@@ -35,6 +35,10 @@ type DashboardSummary struct {
 	// Pendências do mês (status prevista).
 	ReceivableCents int64
 	PayableCents    int64
+	// Juros e multa PAGOS no mês (eixo caixa, débitos): quanto a família
+	// perdeu por atrasar. Count = pagamentos que carregaram encargo.
+	ExpenseLateChargesCents int64
+	ExpenseLateChargesCount int64
 	// Despesa por categoria (folhas), maior→menor.
 	Categories []CategoryTotal
 	// Parcelas futuras: débito prevista com installment_number, vencendo após o mês.
@@ -99,10 +103,13 @@ type CashFlow struct {
 //   - DuePaid: realizada, pelo VALOR PAGO (desconto/juros contam; isenção
 //     total conta zero).
 //   - DueOpen: prevista, pelo valor do lançamento.
+//   - DueLateCharges: juros + multa das realizadas que vencem no mês.
 //
 // Eixo CAIXA (paid_at dentro do mês, fallback due_date para liquidações
 // antigas sem data): "saiu/entrou do caixa no mês". É o que a dashboard
 // mostra como realizado. Compensação FICA FORA: nenhum centavo passou.
+//   - CashLateCharges: juros + multa dos pagamentos feitos no mês — o
+//     indicador "quanto perdi por atrasar" (ou ganhei, em receitas).
 //
 // Invariante: DueTotal == DashboardSummary.ExpenseExpectedCents (ou Income)
 // e DueOpen == PayableCents (ou Receivable) para o mesmo kind/mês/membro,
@@ -118,9 +125,14 @@ type EntrySummary struct {
 	DuePaidCount  int64
 	DueOpenCents  int64
 	DueOpenCount  int64
+	// Encargos (multa + juros) das realizadas do mês; Count = quantas tiveram encargo.
+	DueLateChargesCents int64
+	DueLateChargesCount int64
 
-	CashPaidCents int64
-	CashPaidCount int64
+	CashPaidCents        int64
+	CashPaidCount        int64
+	CashLateChargesCents int64
+	CashLateChargesCount int64
 }
 
 // FinanceDashboardRepository agrega lançamentos em SQL (multitenant).
