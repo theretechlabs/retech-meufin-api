@@ -884,20 +884,25 @@ func (h *FinancialEntryHandler) Reopen(c *gin.Context) {
 }
 
 type financialEntrySettleJSON struct {
-	PaidAt          *string    `json:"paid_at"`           // RFC3339 ou YYYY-MM-DD; default: agora
-	PaidAmountCents *int64     `json:"paid_amount_cents"` // default: amount_cents
-	PaymentMethod   string     `json:"payment_method" binding:"required"`
+	PaidAt *string `json:"paid_at"` // RFC3339 ou YYYY-MM-DD; default: agora
+	// default: valor − desconto + encargos. Menor = pagamento parcial (gera
+	// residual); maior é rejeitado (use late_fee_cents/late_interest_cents).
+	PaidAmountCents *int64     `json:"paid_amount_cents"`
+	PaymentMethod   string     `json:"payment_method"` // opcional; vazio = não informada
 	AccountID       *uuid.UUID `json:"account_id"`
 	CardID          *uuid.UUID `json:"card_id"`
 	Notes           *string    `json:"notes"`
-	DiscountCents   *int64     `json:"discount_cents"`  // desconto obtido; abate do valor pago
+	DiscountCents   *int64     `json:"discount_cents"`  // desconto obtido; abate do devido
 	DiscountReason  *string    `json:"discount_reason"` // slug do catálogo /finance/discount-reasons
-	// Encargos por atraso pagos; somam ao valor pago quando paid_amount_cents não vem.
+	// Encargos por atraso pagos; somam ao devido.
 	LateFeeCents      *int64 `json:"late_fee_cents"`
 	LateInterestCents *int64 `json:"late_interest_cents"`
+	// Vencimento do residual no pagamento parcial; default: vencimento original.
+	ResidualDueDate *string `json:"residual_due_date"` // YYYY-MM-DD
 }
 
-// Settle liquida o lançamento com forma de pagamento, valor e data.
+// Settle liquida o lançamento: data, valor, desconto, encargos, forma de
+// pagamento, conta/cartão, observações e residual. Superconjunto de Confirm.
 func (h *FinancialEntryHandler) Settle(c *gin.Context) {
 	ws, ok := middleware.WorkspaceID(c)
 	if !ok {
@@ -926,11 +931,21 @@ func (h *FinancialEntryHandler) Settle(c *gin.Context) {
 		}
 		paidAt = &t
 	}
+	var residualDue *time.Time
+	if body.ResidualDueDate != nil && *body.ResidualDueDate != "" {
+		t, err := time.Parse(entryDateLayout, *body.ResidualDueDate)
+		if err != nil {
+			errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "residual_due_date inválida (use YYYY-MM-DD)")
+			return
+		}
+		residualDue = &t
+	}
 	e, err := h.svc.Settle(c.Request.Context(), app.SettleEntryInput{
 		WorkspaceID: ws, ID: id, PaidAt: paidAt, PaidAmountCents: body.PaidAmountCents,
 		PaymentMethod: body.PaymentMethod, AccountID: body.AccountID, CardID: body.CardID, Notes: body.Notes,
 		DiscountCents: body.DiscountCents, DiscountReason: body.DiscountReason,
 		LateFeeCents: body.LateFeeCents, LateInterestCents: body.LateInterestCents,
+		ResidualDueDate: residualDue,
 	})
 	if err != nil {
 		errrespond.Write(c, err)

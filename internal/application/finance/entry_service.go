@@ -1018,16 +1018,49 @@ type ConfirmEntryInput struct {
 	LateInterestCents *int64
 }
 
-// Confirm marca o lançamento como realizado (liquidação rápida, sem detalhes
-// de pagamento). Com desconto informado, o valor pago abate o desconto e o
-// motivo fica registrado como indicador. Com valor pago menor que o devido,
-// o saldo não pago vira um novo lançamento previsto ligado à origem.
+// Confirm marca o lançamento como realizado sem forma de pagamento (atalho de
+// um clique e isenções). Desconto, encargos, pagamento parcial e residual
+// seguem exatamente as regras de Settle: os dois delegam a liquidate.
 func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInput) (*dom.FinancialEntry, error) {
-	// Não existe mais atalho sem carimbo: TODA liquidação grava paid_at
-	// (default: agora) e paid_amount_cents. A data do pagamento é o eixo do
-	// realizado (caixa) — o atalho antigo pulava o carimbo e o lançamento
-	// caía no fallback por vencimento, degradando a DFC em silêncio.
-	e, err := s.repo.GetByID(ctx, in.WorkspaceID, in.ID)
+	return s.liquidate(ctx, in.WorkspaceID, in.ID, liquidationInput{
+		PaidAt:            in.PaidAt,
+		PaidAmountCents:   in.PaidAmountCents,
+		DiscountCents:     in.DiscountCents,
+		DiscountReason:    in.DiscountReason,
+		LateFeeCents:      in.LateFeeCents,
+		LateInterestCents: in.LateInterestCents,
+		ResidualDueDate:   in.ResidualDueDate,
+	})
+}
+
+// liquidationInput é o núcleo comum de Confirm e Settle. A única diferença
+// entre os dois caminhos é a forma de pagamento (e conta/cartão/observações
+// que a acompanham): com ela o evento é "settled", sem ela "confirmed".
+type liquidationInput struct {
+	PaidAt            *time.Time
+	PaidAmountCents   *int64
+	DiscountCents     *int64
+	DiscountReason    *string
+	LateFeeCents      *int64
+	LateInterestCents *int64
+	ResidualDueDate   *time.Time
+	PaymentMethod     *dom.PaymentMethod // nil = não informada
+	AccountID         *uuid.UUID
+	CardID            *uuid.UUID
+	Notes             *string
+}
+
+// liquidate marca o lançamento como realizado. Com desconto informado, o
+// valor pago abate o desconto e o motivo fica registrado como indicador.
+// Encargos de atraso somam ao devido. Com valor pago menor que o devido, o
+// saldo não pago vira um novo lançamento previsto ligado à origem (residual).
+// Fatura pai propaga a realização para os filhos (cascata).
+func (s *FinancialEntryService) liquidate(ctx context.Context, workspaceID, id uuid.UUID, in liquidationInput) (*dom.FinancialEntry, error) {
+	// Não existe atalho sem carimbo: TODA liquidação grava paid_at (default:
+	// agora) e paid_amount_cents. A data do pagamento é o eixo do realizado
+	// (caixa) — pular o carimbo jogava o lançamento no fallback por
+	// vencimento, degradando a DFC em silêncio.
+	e, err := s.repo.GetByID(ctx, workspaceID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1079,6 +1112,12 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 	e.LateInterestCents = lateInterest
 	e.PaidAt = &paidAt
 	e.PaidAmountCents = &paid
+	e.PaymentMethod = in.PaymentMethod
+	e.PaymentAccountID = in.AccountID
+	e.PaymentCardID = in.CardID
+	if in.Notes != nil {
+		e.Notes = in.Notes
+	}
 	e.UpdatedAt = now
 	if err := e.Validate(); err != nil {
 		return nil, err
@@ -1086,7 +1125,7 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 	if err := s.repo.Update(ctx, e); err != nil {
 		return nil, err
 	}
-	if err := s.repo.CascadeStatusToChildren(ctx, in.WorkspaceID, e.ID, dom.StatusRealizada, e.PaidAt); err != nil {
+	if err := s.repo.CascadeStatusToChildren(ctx, workspaceID, e.ID, dom.StatusRealizada, e.PaidAt); err != nil {
 		return nil, err
 	}
 
@@ -1121,10 +1160,14 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 			return nil, err
 		}
 	}
+	event := dom.EventConfirmed
+	if in.PaymentMethod != nil {
+		event = dom.EventSettled
+	}
 	s.logEvent(ctx, dom.EntryEvent{
 		WorkspaceID:     e.WorkspaceID,
 		EntryID:         e.ID,
-		Event:           dom.EventConfirmed,
+		Event:           event,
 		FromStatus:      statusPtr(dom.StatusPrevista),
 		ToStatus:        statusPtr(dom.StatusRealizada),
 		PaidAt:          e.PaidAt,
@@ -1314,32 +1357,48 @@ func (s *FinancialEntryService) ExtendRecurrences(ctx context.Context) (int, err
 // SettleEntryInput detalha a liquidação de um lançamento (pagamento de despesa
 // ou recebimento de receita).
 type SettleEntryInput struct {
-	WorkspaceID     uuid.UUID
-	ID              uuid.UUID
-	PaidAt          *time.Time // default: agora
-	PaidAmountCents *int64     // default: amount_cents; pode diferir (juros/multa/desconto)
-	PaymentMethod   string
+	WorkspaceID uuid.UUID
+	ID          uuid.UUID
+	PaidAt      *time.Time // default: agora
+	// PaidAmountCents: default = valor − desconto + encargos. Menor que isso é
+	// pagamento parcial (a diferença vira residual); maior é rejeitado —
+	// juros/multa entram em LateFeeCents/LateInterestCents.
+	PaidAmountCents *int64
+	PaymentMethod   string // opcional; vazio = não informada (evento "confirmed")
 	AccountID       *uuid.UUID
 	CardID          *uuid.UUID
 	Notes           *string
-	DiscountCents   *int64  // desconto obtido; abate do valor pago quando PaidAmountCents não vem
+	DiscountCents   *int64  // desconto obtido; abate do devido
 	DiscountReason  *string // slug do catálogo dom.DiscountReasons
-	// Encargos por atraso pagos; somam ao valor pago quando PaidAmountCents não vem.
+	// Encargos por atraso pagos; somam ao devido.
 	LateFeeCents      *int64
 	LateInterestCents *int64
+	// ResidualDueDate: vencimento do residual no pagamento parcial; default
+	// é o vencimento original (residual nasce vencido).
+	ResidualDueDate *time.Time
 }
 
-// Settle liquida o lançamento com forma de pagamento e valores. Liquidar uma
-// fatura pai propaga a realização para os filhos (cascata).
+// Settle liquida o lançamento com forma de pagamento, conta/cartão e
+// observações. Valores, desconto, encargos e residual são os mesmos de
+// Confirm — é o superconjunto dele (ver liquidate).
 func (s *FinancialEntryService) Settle(ctx context.Context, in SettleEntryInput) (*dom.FinancialEntry, error) {
-	e, err := s.repo.GetByID(ctx, in.WorkspaceID, in.ID)
-	if err != nil {
-		return nil, err
+	li := liquidationInput{
+		PaidAt:            in.PaidAt,
+		PaidAmountCents:   in.PaidAmountCents,
+		DiscountCents:     in.DiscountCents,
+		DiscountReason:    in.DiscountReason,
+		LateFeeCents:      in.LateFeeCents,
+		LateInterestCents: in.LateInterestCents,
+		ResidualDueDate:   in.ResidualDueDate,
+		Notes:             in.Notes,
 	}
-	if e.Status == dom.StatusCancelada {
-		return nil, &dom.ValidationError{Msg: "lançamento cancelado não pode ser liquidado"}
+	if in.PaymentMethod == "" {
+		// Conta/cartão só fazem sentido junto da forma de pagamento.
+		if in.AccountID != nil || in.CardID != nil {
+			return nil, &dom.ValidationError{Msg: "informe a forma de pagamento para vincular conta ou cartão"}
+		}
+		return s.liquidate(ctx, in.WorkspaceID, in.ID, li)
 	}
-
 	method := dom.PaymentMethod(in.PaymentMethod)
 	if !dom.ValidPaymentMethod(method) {
 		return nil, &dom.ValidationError{Msg: "forma de pagamento inválida"}
@@ -1347,67 +1406,10 @@ func (s *FinancialEntryService) Settle(ctx context.Context, in SettleEntryInput)
 	if method == dom.PaymentCartaoCredito && in.CardID == nil {
 		return nil, &dom.ValidationError{Msg: "informe o cartão de crédito usado no pagamento"}
 	}
-
-	now := time.Now().UTC()
-	paidAt := now
-	if in.PaidAt != nil {
-		paidAt = in.PaidAt.UTC()
-	}
-	lateFee, lateInterest, charges, err := lateChargesFromInput(in.LateFeeCents, in.LateInterestCents)
-	if err != nil {
-		return nil, err
-	}
-	expected := e.AmountCents
-	if in.DiscountCents != nil {
-		expected = e.AmountCents - *in.DiscountCents
-	}
-	if charges > 0 && expected <= 0 {
-		return nil, &dom.ValidationError{Msg: "isenção total não admite juros ou multa"}
-	}
-	expected += charges
-	paid := expected
-	if in.PaidAmountCents != nil {
-		// Zero só quando o desconto zerou o devido (isenção total).
-		if *in.PaidAmountCents == 0 && expected > 0 {
-			return nil, &dom.ValidationError{Msg: "paid_amount_cents não pode ser zero"}
-		}
-		paid = *in.PaidAmountCents
-	}
-
-	e.Status = dom.StatusRealizada
-	e.DiscountCents = in.DiscountCents
-	e.DiscountReason = in.DiscountReason
-	e.LateFeeCents = lateFee
-	e.LateInterestCents = lateInterest
-	e.PaidAt = &paidAt
-	e.PaidAmountCents = &paid
-	e.PaymentMethod = &method
-	e.PaymentAccountID = in.AccountID
-	e.PaymentCardID = in.CardID
-	if in.Notes != nil {
-		e.Notes = in.Notes
-	}
-	e.UpdatedAt = now
-
-	if err := e.Validate(); err != nil {
-		return nil, err
-	}
-	if err := s.repo.Update(ctx, e); err != nil {
-		return nil, err
-	}
-	if err := s.repo.CascadeStatusToChildren(ctx, in.WorkspaceID, e.ID, dom.StatusRealizada, &paidAt); err != nil {
-		return nil, err
-	}
-	s.logEvent(ctx, dom.EntryEvent{
-		WorkspaceID:     e.WorkspaceID,
-		EntryID:         e.ID,
-		Event:           dom.EventSettled,
-		FromStatus:      statusPtr(dom.StatusPrevista),
-		ToStatus:        statusPtr(dom.StatusRealizada),
-		PaidAt:          e.PaidAt,
-		PaidAmountCents: e.PaidAmountCents,
-	})
-	return e, nil
+	li.PaymentMethod = &method
+	li.AccountID = in.AccountID
+	li.CardID = in.CardID
+	return s.liquidate(ctx, in.WorkspaceID, in.ID, li)
 }
 
 // ListEvents devolve a trilha de eventos do lançamento (append-only).
