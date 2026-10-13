@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	dom "github.com/retechfin/retechfin-api/internal/domain/finance"
 )
 
@@ -218,6 +219,75 @@ func TestCreateInheritsLateTermsAcrossSeries(t *testing.T) {
 		}
 		if c.LateFeeCents != nil || c.LateInterestCents != nil {
 			t.Fatal("parcela nova não carrega encargo pago")
+		}
+	}
+}
+
+func TestUpdateApplyToFuturePropagatesLateTerms(t *testing.T) {
+	repo := newFakeEntryRepo()
+	svc := NewFinancialEntryService(repo, fakeCategoryRepo{})
+	ws := uuid.New()
+	occs := createInstallmentSeries(t, svc, ws, 6) // 6 parcelas, sem termos (padrão)
+
+	// Parcela 2 já paga: fato consumado, não recebe termos novos.
+	repo.entries[occs[1].ID].Status = dom.StatusRealizada
+
+	// Edita a parcela 3: multa 5% + juros 2% a.m., aplicar às próximas.
+	third := occs[2]
+	feeBP, intBP := 500, 200
+	_, stats, err := svc.Update(context.Background(), UpdateEntryInput{
+		WorkspaceID: ws, ID: third.ID, Kind: "debit",
+		AmountCents: third.AmountCents, DueDate: third.DueDate, Description: third.Description,
+		LateTermsSet: true, LateFeeBP: &feeBP, LateInterestMonthlyBP: &intBP,
+		ApplyToFuture: true,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Só campos (sem mudança de dia): parcelas 4, 5 e 6.
+	if stats.DueDates != 0 || stats.Fields != 3 || stats.Total != 3 {
+		t.Fatalf("stats esperado {0 3 3}, veio %+v", stats)
+	}
+	for i, occ := range occs {
+		got := repo.entries[occ.ID]
+		if i < 2 {
+			if got.LateFeeBP != nil || got.LateInterestMonthlyBP != nil {
+				t.Fatalf("parcela %d (anterior/paga) não deve receber termos: %v/%v", i+1, got.LateFeeBP, got.LateInterestMonthlyBP)
+			}
+			continue
+		}
+		if got.LateFeeBP == nil || *got.LateFeeBP != 500 || got.LateInterestMonthlyBP == nil || *got.LateInterestMonthlyBP != 200 {
+			t.Fatalf("parcela %d: termos esperados 500/200, veio %v/%v", i+1, got.LateFeeBP, got.LateInterestMonthlyBP)
+		}
+	}
+
+	// Sem LateTermsSet (edição parcial, ex.: PurchaseEditDialog): termos preservados.
+	_, _, err = svc.Update(context.Background(), UpdateEntryInput{
+		WorkspaceID: ws, ID: third.ID, Kind: "debit",
+		AmountCents: third.AmountCents, DueDate: third.DueDate, Description: "renomeada",
+	})
+	if err != nil {
+		t.Fatalf("Update parcial: %v", err)
+	}
+	if got := repo.entries[third.ID]; got.LateFeeBP == nil || *got.LateFeeBP != 500 {
+		t.Fatalf("edição sem late_terms deve preservar termos, veio %v", got.LateFeeBP)
+	}
+
+	// Limpar os dois (null, null) com aplicar às próximas: volta ao padrão em toda a frente.
+	_, stats, err = svc.Update(context.Background(), UpdateEntryInput{
+		WorkspaceID: ws, ID: third.ID, Kind: "debit",
+		AmountCents: third.AmountCents, DueDate: third.DueDate, Description: "renomeada",
+		LateTermsSet: true, ApplyToFuture: true,
+	})
+	if err != nil {
+		t.Fatalf("Update limpar: %v", err)
+	}
+	if stats.Fields != 3 {
+		t.Fatalf("limpar termos deve propagar às 3 futuras, veio %+v", stats)
+	}
+	for i := 2; i < 6; i++ {
+		if got := repo.entries[occs[i].ID]; got.LateFeeBP != nil || got.LateInterestMonthlyBP != nil {
+			t.Fatalf("parcela %d: termos deveriam voltar ao padrão (nil), veio %v/%v", i+1, got.LateFeeBP, got.LateInterestMonthlyBP)
 		}
 	}
 }
