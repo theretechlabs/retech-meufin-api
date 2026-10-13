@@ -277,23 +277,74 @@ func TestSettleDefaultsAndCascade(t *testing.T) {
 	}
 }
 
-func TestSettlePaidAmountCanDiffer(t *testing.T) {
+func TestSettleRejectsPaidAboveDue(t *testing.T) {
 	repo := newFakeEntryRepo()
 	e := seedEntry(repo, dom.StatusPrevista)
 	svc := NewFinancialEntryService(repo, fakeCategoryRepo{})
 
-	paid := int64(10_550) // juros
-	got, err := svc.Settle(context.Background(), SettleEntryInput{
+	// Mesma regra de Confirm: juros/multa entram em late_*_cents, não no pago.
+	paid := int64(10_550)
+	_, err := svc.Settle(context.Background(), SettleEntryInput{
 		WorkspaceID: e.WorkspaceID, ID: e.ID, PaymentMethod: "boleto", PaidAmountCents: &paid,
 	})
+	if !errors.Is(err, dom.ErrValidation) {
+		t.Fatalf("quer erro de validação para pago > devido, veio %v", err)
+	}
+}
+
+func TestSettlePartialCreatesResidual(t *testing.T) {
+	repo := newFakeEntryRepo()
+	e := seedEntry(repo, dom.StatusPrevista)
+	svc := NewFinancialEntryService(repo, fakeCategoryRepo{})
+
+	paid := int64(6_000)
+	residualDue := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	got, err := svc.Settle(context.Background(), SettleEntryInput{
+		WorkspaceID: e.WorkspaceID, ID: e.ID, PaymentMethod: "pix",
+		PaidAmountCents: &paid, ResidualDueDate: &residualDue,
+	})
 	if err != nil {
-		t.Fatalf("Settle: %v", err)
+		t.Fatalf("Settle parcial: %v", err)
 	}
-	if *got.PaidAmountCents != paid {
-		t.Fatalf("paid_amount = %d, quer %d", *got.PaidAmountCents, paid)
+	if *got.PaidAmountCents != paid || got.Status != dom.StatusRealizada {
+		t.Fatalf("origem deve ficar realizada com pago %d, veio %d/%s", paid, *got.PaidAmountCents, got.Status)
 	}
-	if got.AmountCents != 10_000 {
-		t.Fatalf("amount original deve ser preservado, veio %d", got.AmountCents)
+	res := findResidual(repo, e.ID)
+	if res == nil {
+		t.Fatal("residual não criado no Settle parcial")
+	}
+	if res.AmountCents != 4_000 || !res.DueDate.Equal(residualDue) || res.Status != dom.StatusPrevista {
+		t.Fatalf("residual = %d venc %s %s, quer 4000 em %s prevista", res.AmountCents, res.DueDate, res.Status, residualDue)
+	}
+}
+
+func TestSettleWithoutMethodIsPlainConfirm(t *testing.T) {
+	repo := newFakeEntryRepo()
+	e := seedEntry(repo, dom.StatusPrevista)
+	svc := NewFinancialEntryService(repo, fakeCategoryRepo{})
+
+	notes := "pago no caixa"
+	got, err := svc.Settle(context.Background(), SettleEntryInput{
+		WorkspaceID: e.WorkspaceID, ID: e.ID, Notes: &notes,
+	})
+	if err != nil {
+		t.Fatalf("Settle sem forma de pagamento deve liquidar, veio %v", err)
+	}
+	if got.Status != dom.StatusRealizada || got.PaymentMethod != nil {
+		t.Fatalf("quer realizada sem payment_method, veio %s/%v", got.Status, got.PaymentMethod)
+	}
+	if got.Notes == nil || *got.Notes != notes {
+		t.Fatalf("notes não persistido: %v", got.Notes)
+	}
+
+	// Conta/cartão sem forma de pagamento não têm significado: rejeitados.
+	acc := uuid.New()
+	e2 := seedEntry(repo, dom.StatusPrevista)
+	_, err = svc.Settle(context.Background(), SettleEntryInput{
+		WorkspaceID: e2.WorkspaceID, ID: e2.ID, AccountID: &acc,
+	})
+	if !errors.Is(err, dom.ErrValidation) {
+		t.Fatalf("quer erro de validação para conta sem forma de pagamento, veio %v", err)
 	}
 }
 
