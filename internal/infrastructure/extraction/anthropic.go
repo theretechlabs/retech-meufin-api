@@ -87,6 +87,9 @@ func NewAnthropicExtractor(cfg Config) *AnthropicExtractor {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBaseURL
 	}
+	if cfg.Effort == "" {
+		cfg.Effort = DefaultEffort
+	}
 	return &AnthropicExtractor{
 		cfg: cfg,
 		// Laudos grandes geram dezenas de milhares de tokens de saída; com o
@@ -182,13 +185,29 @@ func autoToolChoice() *anthropicToolChoice {
 	return &anthropicToolChoice{Type: "auto", DisableParallelToolUse: true}
 }
 
+// anthropicOutputConfig controla o esforço de raciocínio (GA, Claude 4.6+).
+// Em Claude 5.x o thinking é sempre ligado e o effort é o único controle de
+// custo/latência: low | medium | high | xhigh | max.
+type anthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+
 type anthropicRequest struct {
-	Model      string               `json:"model"`
-	MaxTokens  int                  `json:"max_tokens"`
-	System     string               `json:"system,omitempty"`
-	Tools      []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
-	Messages   []anthropicMessage   `json:"messages"`
+	Model        string                 `json:"model"`
+	MaxTokens    int                    `json:"max_tokens"`
+	System       string                 `json:"system,omitempty"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	Messages     []anthropicMessage     `json:"messages"`
+}
+
+// effortConfig monta output_config; vazio = default do modelo.
+func effortConfig(effort string) *anthropicOutputConfig {
+	if effort == "" {
+		return nil
+	}
+	return &anthropicOutputConfig{Effort: effort}
 }
 
 type anthropicResponse struct {
@@ -316,6 +335,9 @@ func (a *AnthropicExtractor) Extract(ctx context.Context, in ExtractInput) (Extr
 			InputSchema: profile.InputSchema,
 		}},
 		ToolChoice: autoToolChoice(),
+		// Transcrição literal de documento: não precisa de raciocínio longo.
+		// EXTRACTION_EFFORT permite subir (laudos difíceis) ou baixar (custo).
+		OutputConfig: effortConfig(a.cfg.Effort),
 		Messages: []anthropicMessage{{
 			Role: "user",
 			Content: []anthropicContentBlock{

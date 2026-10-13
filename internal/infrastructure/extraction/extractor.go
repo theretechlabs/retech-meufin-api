@@ -25,6 +25,12 @@ const (
 const (
 	DefaultModel   = "claude-opus-4-8"
 	DefaultBaseURL = "https://api.anthropic.com"
+	// DefaultEffort é o esforço de raciocínio da extração de documentos
+	// (output_config.effort, Claude 4.6+). Transcrever é tarefa literal;
+	// "medium" segura custo sem perder fidelidade. Chave NFC-e e
+	// categorização usam EffortLow fixo.
+	DefaultEffort = "medium"
+	EffortLow     = "low"
 )
 
 // ExtractInput carrega o conteúdo bruto de um documento a ser extraído.
@@ -62,6 +68,9 @@ type Config struct {
 	Model    string
 	APIKey   string
 	BaseURL  string
+	// Effort: output_config.effort da extração de documentos (low|medium|
+	// high|xhigh|max). Vazio = DefaultEffort.
+	Effort string
 }
 
 // ConfigFromEnv monta a Config a partir das variáveis de ambiente:
@@ -70,6 +79,7 @@ type Config struct {
 //	HEALTH_EXTRACTION_MODEL     — default "claude-opus-4-8"
 //	HEALTH_EXTRACTION_API_KEY   — chave do provider
 //	HEALTH_EXTRACTION_BASE_URL  — default "https://api.anthropic.com"
+//	EXTRACTION_EFFORT           — default "medium" (só o genérico)
 //
 // Lê EXTRACTION_* (genérico, compartilhado por Saúde e Financeiro) e, como
 // compatibilidade, cai para HEALTH_EXTRACTION_* quando o genérico não existe.
@@ -79,6 +89,7 @@ func ConfigFromEnv() Config {
 		Model:    firstEnv([]string{"EXTRACTION_MODEL", "HEALTH_EXTRACTION_MODEL"}, DefaultModel),
 		APIKey:   firstEnv([]string{"EXTRACTION_API_KEY", "HEALTH_EXTRACTION_API_KEY"}, ""),
 		BaseURL:  firstEnv([]string{"EXTRACTION_BASE_URL", "HEALTH_EXTRACTION_BASE_URL"}, DefaultBaseURL),
+		Effort:   firstEnv([]string{"EXTRACTION_EFFORT"}, DefaultEffort),
 	}
 }
 

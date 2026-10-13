@@ -148,6 +148,8 @@ func (a *AnthropicExtractor) Categorize(ctx context.Context, in CategorizeInput)
 			InputSchema: categorizeInputSchema(),
 		}},
 		ToolChoice: autoToolChoice(),
+		// Classificação em lista fechada: effort mínimo basta.
+		OutputConfig: effortConfig(EffortLow),
 		Messages: []anthropicMessage{{
 			Role:    "user",
 			Content: []anthropicContentBlock{{Type: "text", Text: b.String()}},

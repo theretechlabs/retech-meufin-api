@@ -85,6 +85,14 @@ func TestToolChoiceIsAutoEverywhere(t *testing.T) {
 			t.Fatalf("req #%d: quer disable_parallel_tool_use=true", i+1)
 		}
 	}
+	// Effort por caminho: chave e categorização em low; extração no default.
+	wantEffort := []string{EffortLow, EffortLow, DefaultEffort}
+	for i, req := range fake.requests {
+		oc, _ := req["output_config"].(map[string]any)
+		if oc["effort"] != wantEffort[i] {
+			t.Fatalf("req #%d: output_config.effort = %v, quer %s", i+1, oc["effort"], wantEffort[i])
+		}
+	}
 }
 
 // "auto" não garante a chamada: resposta só com texto dispara UM reenvio com

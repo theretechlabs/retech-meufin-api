@@ -93,6 +93,8 @@ func (a *AnthropicExtractor) ReadFiscalKey(ctx context.Context, content []byte, 
 			InputSchema: keyReaderInputSchema(),
 		}},
 		ToolChoice: autoToolChoice(),
+		// Ler 44 dígitos não pede raciocínio: effort mínimo = mais barato e rápido.
+		OutputConfig: effortConfig(EffortLow),
 		Messages: []anthropicMessage{{
 			Role: "user",
 			Content: []anthropicContentBlock{
