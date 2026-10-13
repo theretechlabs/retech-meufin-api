@@ -1,12 +1,9 @@
 package extraction
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 )
 
@@ -141,65 +138,32 @@ func (a *AnthropicExtractor) Categorize(ctx context.Context, in CategorizeInput)
 	}
 
 	reqBody := anthropicRequest{
-		Model:     a.cfg.Model,
-		MaxTokens: 4096,
+		Model: a.cfg.Model,
+		// Listas grandes + thinking adaptativo (Claude 5.x) passam fácil de 4k.
+		MaxTokens: 16000,
 		System:    categorizeSystemPrompt,
 		Tools: []anthropicTool{{
 			Name:        categorizeToolName,
 			Description: "Classifica cada item numa categoria de despesa (existente ou nova).",
 			InputSchema: categorizeInputSchema(),
 		}},
-		ToolChoice: &anthropicToolChoice{Type: "tool", Name: categorizeToolName},
+		ToolChoice: autoToolChoice(),
+		// Classificação em lista fechada: effort mínimo basta.
+		OutputConfig: effortConfig(EffortLow),
 		Messages: []anthropicMessage{{
 			Role:    "user",
 			Content: []anthropicContentBlock{{Type: "text", Text: b.String()}},
 		}},
 	}
 
-	payload, err := json.Marshal(reqBody)
+	input, parsed, _, err := a.callTool(ctx, "categorizer", reqBody, categorizeToolName)
 	if err != nil {
-		return CategorizeResult{}, fmt.Errorf("categorizer: montar payload: %w", err)
+		return CategorizeResult{}, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.BaseURL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return CategorizeResult{}, fmt.Errorf("categorizer: montar requisição: %w", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return CategorizeResult{}, fmt.Errorf("categorizer: chamada à Anthropic: %w", err)
-	}
-	defer resp.Body.Close()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return CategorizeResult{}, fmt.Errorf("categorizer: ler resposta: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiErr anthropicResponse
-		_ = json.Unmarshal(rawBody, &apiErr)
-		if apiErr.Error != nil {
-			return CategorizeResult{}, fmt.Errorf("categorizer: anthropic %d (%s): %s", resp.StatusCode, apiErr.Error.Type, apiErr.Error.Message)
-		}
-		return CategorizeResult{}, fmt.Errorf("categorizer: anthropic status %d", resp.StatusCode)
-	}
-
-	var parsed anthropicResponse
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
-		return CategorizeResult{}, fmt.Errorf("categorizer: decodificar resposta: %w", err)
-	}
-
 	var toolOut categorizeToolOutput
-	for _, block := range parsed.Content {
-		if block.Type == "tool_use" && block.Name == categorizeToolName && len(block.Input) > 0 {
-			if err := json.Unmarshal(block.Input, &toolOut); err != nil {
-				return CategorizeResult{}, fmt.Errorf("categorizer: decodificar tool: %w", err)
-			}
-			break
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &toolOut); err != nil {
+			return CategorizeResult{}, fmt.Errorf("categorizer: decodificar tool: %w", err)
 		}
 	}
 
