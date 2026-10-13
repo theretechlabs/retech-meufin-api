@@ -333,6 +333,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		finance.POST("/entries/:id/cancel", entH.Cancel)
 		finance.POST("/entries/:id/waive", entH.Waive)
 		finance.POST("/entries/:id/settle", entH.Settle)
+		finance.GET("/entries/:id/late-charges", entH.LateCharges)
 		finance.POST("/entries/:id/resize-installments", entH.ResizeInstallments)
 
 		// Renegociação (novação): encerra as cobranças em aberto e cria a

@@ -106,6 +106,11 @@ type CreateEntryInput struct {
 	AssetID   *uuid.UUID
 	// PurchaseDate: data da compra (informacional, itens de fatura).
 	PurchaseDate *time.Time
+	// LateFeeBP/LateInterestMonthlyBP: termos de atraso (multa % e juros %
+	// a.m., em basis points). Herdados por toda a série/parcelamento. Nil
+	// nos dois = padrão do domínio na hora de cotar.
+	LateFeeBP             *int
+	LateInterestMonthlyBP *int
 	// ConfirmPastOccurrences: em lançamento retroativo (ex.: financiamento
 	// começado ano passado), as ocorrências com vencimento até hoje nascem
 	// 'realizada' — evita confirmar dezenas de parcelas uma a uma.
@@ -143,6 +148,12 @@ type UpdateEntryInput struct {
 	// Nil preserva o atual; 0 limpa (compra deixa de ser parcelada).
 	InstallmentNumber *int
 	InstallmentTotal  *int
+	// Termos de atraso. LateTermsSet=false preserva os atuais (edições
+	// parciais não os enviam); true grava os informados (nil limpa → volta
+	// ao padrão). Com ApplyToFuture, propagam às previstas futuras.
+	LateTermsSet          bool
+	LateFeeBP             *int
+	LateInterestMonthlyBP *int
 	// ApplyToFuture propaga as mudanças (dia do vencimento, valor, descrição
 	// e categoria) para as ocorrências/parcelas 'prevista' futuras do mesmo
 	// grupo. Exige que o lançamento pertença a uma série (recorrência ou
@@ -183,6 +194,7 @@ func (s *FinancialEntryService) Create(ctx context.Context, in CreateEntryInput)
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	base.LateFeeBP, base.LateInterestMonthlyBP = normalizeLateTerms(in.LateFeeBP, in.LateInterestMonthlyBP)
 
 	if err := s.validateExpenseCategory(ctx, in.WorkspaceID, base.Kind, base.Type); err != nil {
 		return nil, err
@@ -431,6 +443,9 @@ func (s *FinancialEntryService) Update(ctx context.Context, in UpdateEntryInput)
 	if in.PurchaseDate != nil {
 		e.PurchaseDate = in.PurchaseDate
 	}
+	if in.LateTermsSet {
+		e.LateFeeBP, e.LateInterestMonthlyBP = normalizeLateTerms(in.LateFeeBP, in.LateInterestMonthlyBP)
+	}
 	if in.InstallmentNumber != nil {
 		if *in.InstallmentNumber <= 0 {
 			e.InstallmentNumber = nil
@@ -513,7 +528,8 @@ func (s *FinancialEntryService) propagateToSeries(ctx context.Context, orig, upd
 	amountChanged := updated.AmountCents != orig.AmountCents
 	descChanged := updated.Description != orig.Description
 	typeChanged := !strPtrEqual(updated.Type, orig.Type)
-	fieldsChanged := amountChanged || descChanged || typeChanged
+	lateTermsChanged := !intPtrEqual(updated.LateFeeBP, orig.LateFeeBP) || !intPtrEqual(updated.LateInterestMonthlyBP, orig.LateInterestMonthlyBP)
+	fieldsChanged := amountChanged || descChanged || typeChanged || lateTermsChanged
 	if !dayChanged && !fieldsChanged {
 		return SeriesUpdateStats{}, nil
 	}
@@ -544,6 +560,10 @@ func (s *FinancialEntryService) propagateToSeries(ctx context.Context, orig, upd
 			if typeChanged {
 				sib.Type = updated.Type
 			}
+			if lateTermsChanged {
+				sib.LateFeeBP = updated.LateFeeBP
+				sib.LateInterestMonthlyBP = updated.LateInterestMonthlyBP
+			}
 			stats.Fields++
 			touched = true
 		}
@@ -564,6 +584,74 @@ func strPtrEqual(a, b *string) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// normalizeLateTerms grava os termos como vieram, exceto o par (nil, nil),
+// que significa "sem termos próprios" → padrão do domínio. Um termo
+// informado e o outro não: o ausente vale zero — quem escreve "multa 2%" e
+// nada de juros quer juros zero, não 1% por padrão.
+func normalizeLateTerms(feeBP, interestBP *int) (*int, *int) {
+	if feeBP == nil && interestBP == nil {
+		return nil, nil
+	}
+	zero := 0
+	if feeBP == nil {
+		feeBP = &zero
+	}
+	if interestBP == nil {
+		z := 0
+		interestBP = &z
+	}
+	return feeBP, interestBP
+}
+
+// LateChargeQuote cota juros e multa do lançamento para uma data de
+// pagamento (default: hoje). Só lançamentos em aberto fazem sentido —
+// realizado já carrega o que pagou; cancelado não se paga.
+func (s *FinancialEntryService) LateChargeQuote(ctx context.Context, workspaceID, id uuid.UUID, paidAt *time.Time) (*dom.LateChargeQuote, error) {
+	e, err := s.repo.GetByID(ctx, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	at := time.Now().UTC()
+	if paidAt != nil {
+		at = *paidAt
+	}
+	q := e.QuoteLateCharges(at)
+	return &q, nil
+}
+
+// lateChargesFromInput normaliza encargos informados na liquidação: nil ou
+// zero viram nil (sem encargo); negativo é erro.
+func lateChargesFromInput(feeCents, interestCents *int64) (fee, interest *int64, sum int64, err error) {
+	if feeCents != nil {
+		if *feeCents < 0 {
+			return nil, nil, 0, &dom.ValidationError{Msg: "multa não pode ser negativa"}
+		}
+		if *feeCents > 0 {
+			v := *feeCents
+			fee = &v
+			sum += v
+		}
+	}
+	if interestCents != nil {
+		if *interestCents < 0 {
+			return nil, nil, 0, &dom.ValidationError{Msg: "juros não podem ser negativos"}
+		}
+		if *interestCents > 0 {
+			v := *interestCents
+			interest = &v
+			sum += v
+		}
+	}
+	return fee, interest, sum, nil
 }
 
 // YearBounds expõe o intervalo de anos com lançamentos no workspace.
@@ -924,6 +1012,10 @@ type ConfirmEntryInput struct {
 	ResidualDueDate *time.Time
 	// PaidAt: data em que o pagamento foi feito; default é agora.
 	PaidAt *time.Time
+	// Encargos por atraso pagos (multa e juros). Somam ao devido: o valor
+	// pago default passa a ser valor − desconto + multa + juros.
+	LateFeeCents      *int64
+	LateInterestCents *int64
 }
 
 // Confirm marca o lançamento como realizado (liquidação rápida, sem detalhes
@@ -947,7 +1039,16 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 	if in.DiscountCents != nil {
 		discount = *in.DiscountCents
 	}
-	expected := e.AmountCents - discount
+	lateFee, lateInterest, charges, err := lateChargesFromInput(in.LateFeeCents, in.LateInterestCents)
+	if err != nil {
+		return nil, err
+	}
+	// Devido = valor − desconto + encargos. Juros/multa só fazem sentido
+	// com algo a pagar: isenção total com encargo é contradição.
+	if charges > 0 && e.AmountCents-discount <= 0 {
+		return nil, &dom.ValidationError{Msg: "isenção total não admite juros ou multa"}
+	}
+	expected := e.AmountCents - discount + charges
 	paid := expected
 	if in.PaidAmountCents != nil {
 		paid = *in.PaidAmountCents
@@ -960,7 +1061,7 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 	}
 	residual := expected - paid
 	if residual < 0 {
-		return nil, &dom.ValidationError{Msg: "valor pago maior que o devido não é suportado (juros/multa: em breve)"}
+		return nil, &dom.ValidationError{Msg: "valor pago maior que o devido: informe juros/multa em vez de aumentar o valor pago"}
 	}
 	if residual > 0 && e.Type != nil && *e.Type == dom.CartaoCategorySlug {
 		return nil, &dom.ValidationError{Msg: "pagamento parcial de fatura de cartão ainda não é suportado"}
@@ -974,6 +1075,8 @@ func (s *FinancialEntryService) Confirm(ctx context.Context, in ConfirmEntryInpu
 	e.Status = dom.StatusRealizada
 	e.DiscountCents = in.DiscountCents
 	e.DiscountReason = in.DiscountReason
+	e.LateFeeCents = lateFee
+	e.LateInterestCents = lateInterest
 	e.PaidAt = &paidAt
 	e.PaidAmountCents = &paid
 	e.UpdatedAt = now
@@ -1142,6 +1245,8 @@ func (s *FinancialEntryService) Reopen(ctx context.Context, workspaceID, id uuid
 	e.PaymentCardID = nil
 	e.DiscountCents = nil
 	e.DiscountReason = nil
+	e.LateFeeCents = nil
+	e.LateInterestCents = nil
 	e.CancelReason = nil
 	e.UpdatedAt = time.Now().UTC()
 	if err := e.Validate(); err != nil {
@@ -1219,6 +1324,9 @@ type SettleEntryInput struct {
 	Notes           *string
 	DiscountCents   *int64  // desconto obtido; abate do valor pago quando PaidAmountCents não vem
 	DiscountReason  *string // slug do catálogo dom.DiscountReasons
+	// Encargos por atraso pagos; somam ao valor pago quando PaidAmountCents não vem.
+	LateFeeCents      *int64
+	LateInterestCents *int64
 }
 
 // Settle liquida o lançamento com forma de pagamento e valores. Liquidar uma
@@ -1245,12 +1353,19 @@ func (s *FinancialEntryService) Settle(ctx context.Context, in SettleEntryInput)
 	if in.PaidAt != nil {
 		paidAt = in.PaidAt.UTC()
 	}
-	paid := e.AmountCents
+	lateFee, lateInterest, charges, err := lateChargesFromInput(in.LateFeeCents, in.LateInterestCents)
+	if err != nil {
+		return nil, err
+	}
 	expected := e.AmountCents
 	if in.DiscountCents != nil {
 		expected = e.AmountCents - *in.DiscountCents
-		paid = expected
 	}
+	if charges > 0 && expected <= 0 {
+		return nil, &dom.ValidationError{Msg: "isenção total não admite juros ou multa"}
+	}
+	expected += charges
+	paid := expected
 	if in.PaidAmountCents != nil {
 		// Zero só quando o desconto zerou o devido (isenção total).
 		if *in.PaidAmountCents == 0 && expected > 0 {
@@ -1262,6 +1377,8 @@ func (s *FinancialEntryService) Settle(ctx context.Context, in SettleEntryInput)
 	e.Status = dom.StatusRealizada
 	e.DiscountCents = in.DiscountCents
 	e.DiscountReason = in.DiscountReason
+	e.LateFeeCents = lateFee
+	e.LateInterestCents = lateInterest
 	e.PaidAt = &paidAt
 	e.PaidAmountCents = &paid
 	e.PaymentMethod = &method

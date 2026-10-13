@@ -109,6 +109,15 @@ type FinancialEntry struct {
 	// DiscountReasons) vira indicador para insights.
 	DiscountCents  *int64
 	DiscountReason *string
+	// Termos de atraso informados ao lançar (herdados pela série): multa
+	// única e juros ao mês, em basis points. Nil nos dois = padrão do
+	// domínio (ver late_charges.go).
+	LateFeeBP             *int
+	LateInterestMonthlyBP *int
+	// Encargos efetivamente pagos na liquidação (somam ao valor pago).
+	// Indicador: "quanto a família perdeu em juros e multa". Reabrir limpa.
+	LateFeeCents      *int64
+	LateInterestCents *int64
 	// CancelReason é o slug do catálogo global CancelReasons, preenchido no
 	// cancelamento. Determina se a série recorrente é encerrada ou continua.
 	CancelReason *string
@@ -196,6 +205,21 @@ func (e *FinancialEntry) Validate() error {
 		if e.DiscountCents == nil {
 			return &ValidationError{Msg: "motivo de desconto exige discount_cents"}
 		}
+	}
+	if e.LateFeeBP != nil && (*e.LateFeeBP < 0 || *e.LateFeeBP > MaxLateChargeBP) {
+		return &ValidationError{Msg: "multa por atraso deve estar entre 0% e 100%"}
+	}
+	if e.LateInterestMonthlyBP != nil && (*e.LateInterestMonthlyBP < 0 || *e.LateInterestMonthlyBP > MaxLateChargeBP) {
+		return &ValidationError{Msg: "juros ao mês devem estar entre 0% e 100%"}
+	}
+	if e.LateFeeCents != nil && *e.LateFeeCents < 0 {
+		return &ValidationError{Msg: "late_fee_cents não pode ser negativo"}
+	}
+	if e.LateInterestCents != nil && *e.LateInterestCents < 0 {
+		return &ValidationError{Msg: "late_interest_cents não pode ser negativo"}
+	}
+	if (e.LateFeeCents != nil || e.LateInterestCents != nil) && e.Status != StatusRealizada {
+		return &ValidationError{Msg: "encargos de atraso só valem em lançamento realizado"}
 	}
 	if e.CancelReason != nil && *e.CancelReason != "" {
 		if !ValidCancelReason(*e.CancelReason) {
