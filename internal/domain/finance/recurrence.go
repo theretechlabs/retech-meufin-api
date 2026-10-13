@@ -190,6 +190,8 @@ func cloneOccurrence(base FinancialEntry, due time.Time, groupID *uuid.UUID) Fin
 	occ.PaymentCardID = nil
 	occ.DiscountCents = nil
 	occ.DiscountReason = nil
+	occ.LateFeeCents = nil
+	occ.LateInterestCents = nil
 	occ.CancelReason = nil
 	occ.ResidualOfID = nil
 	return occ

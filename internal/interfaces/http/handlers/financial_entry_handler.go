@@ -52,6 +52,10 @@ type financialEntryResponse struct {
 	PaymentCardID            *uuid.UUID `json:"payment_card_id"`
 	DiscountCents            *int64     `json:"discount_cents"`
 	DiscountReason           *string    `json:"discount_reason"`
+	LateFeeBP                *int       `json:"late_fee_bp"`              // multa por atraso (basis points); null = padrão
+	LateInterestMonthlyBP    *int       `json:"late_interest_monthly_bp"` // juros a.m. (basis points); null = padrão
+	LateFeeCents             *int64     `json:"late_fee_cents"`           // multa paga na liquidação
+	LateInterestCents        *int64     `json:"late_interest_cents"`      // juros pagos na liquidação
 	CancelReason             *string    `json:"cancel_reason"`
 	ResidualOfID             *uuid.UUID `json:"residual_of_id"`
 	RenegotiationID          *uuid.UUID `json:"renegotiation_id"`
@@ -106,6 +110,10 @@ func mapFinancialEntry(e *dom.FinancialEntry) financialEntryResponse {
 		PaymentCardID:            e.PaymentCardID,
 		DiscountCents:            e.DiscountCents,
 		DiscountReason:           e.DiscountReason,
+		LateFeeBP:                e.LateFeeBP,
+		LateInterestMonthlyBP:    e.LateInterestMonthlyBP,
+		LateFeeCents:             e.LateFeeCents,
+		LateInterestCents:        e.LateInterestCents,
 		CancelReason:             e.CancelReason,
 		ResidualOfID:             e.ResidualOfID,
 		RenegotiationID:          e.RenegotiationID,
@@ -154,6 +162,9 @@ type financialEntryCreateJSON struct {
 	AssetType         *string    `json:"asset_type"` // vehicle | property
 	AssetID           *uuid.UUID `json:"asset_id"`
 	PurchaseDate      *string    `json:"purchase_date"` // YYYY-MM-DD; data da compra (itens de fatura)
+	// Termos de atraso (basis points: 200 = 2%). Ausentes = padrão do domínio.
+	LateFeeBP             *int `json:"late_fee_bp"`
+	LateInterestMonthlyBP *int `json:"late_interest_monthly_bp"`
 	// Lançamento retroativo: ocorrências vencidas nascem realizadas.
 	ConfirmPastOccurrences bool `json:"confirm_past_occurrences"`
 	// Parcelas informadas uma a uma; substitui a progressão mensal automática.
@@ -219,6 +230,7 @@ func (h *FinancialEntryHandler) Create(c *gin.Context) {
 		CardID: body.CardID, ParentID: body.ParentID, InstallmentsTotal: body.InstallmentsTotal,
 		SupplierID: body.SupplierID, PurchaseDate: purchaseDate, ConfirmPastOccurrences: body.ConfirmPastOccurrences,
 		AssetType: assetTypePtr(body.AssetType), AssetID: body.AssetID,
+		LateFeeBP: body.LateFeeBP, LateInterestMonthlyBP: body.LateInterestMonthlyBP,
 		Installments: installments,
 	})
 	if err != nil {
@@ -411,6 +423,11 @@ type financialEntryUpdateJSON struct {
 	// Parcela da compra em fatura: ausente preserva; 0 limpa.
 	InstallmentNumber *int `json:"installment_number"`
 	InstallmentTotal  *int `json:"installment_total"`
+	// Termos de atraso: chave ausente preserva; presente grava (null nos
+	// dois = volta ao padrão do domínio).
+	LateFeeBP             *int `json:"late_fee_bp"`
+	LateInterestMonthlyBP *int `json:"late_interest_monthly_bp"`
+	LateTermsSet          bool `json:"-"`
 	// ApplyTo: "one" (default) edita só este lançamento; "future" propaga
 	// dia do vencimento/valor/descrição/categoria às ocorrências previstas
 	// futuras da mesma série recorrente.
@@ -448,6 +465,9 @@ func (h *FinancialEntryHandler) Update(c *gin.Context) {
 		_, hasType := keys["asset_type"]
 		_, hasID := keys["asset_id"]
 		body.AssetSet = hasType || hasID
+		_, hasFee := keys["late_fee_bp"]
+		_, hasInterest := keys["late_interest_monthly_bp"]
+		body.LateTermsSet = hasFee || hasInterest
 	}
 	due, err := time.Parse(entryDateLayout, body.DueDate)
 	if err != nil {
@@ -479,6 +499,7 @@ func (h *FinancialEntryHandler) Update(c *gin.Context) {
 		SupplierID: body.SupplierID, PurchaseDate: purchaseDate,
 		AssetSet: body.AssetSet, AssetType: assetTypePtr(body.AssetType), AssetID: body.AssetID,
 		InstallmentNumber: body.InstallmentNumber, InstallmentTotal: body.InstallmentTotal,
+		LateTermsSet: body.LateTermsSet, LateFeeBP: body.LateFeeBP, LateInterestMonthlyBP: body.LateInterestMonthlyBP,
 		ApplyToFuture: applyToFuture,
 	})
 	if err != nil {
@@ -590,7 +611,8 @@ func (h *FinancialEntryHandler) Confirm(c *gin.Context) {
 		WorkspaceID: ws, ID: id,
 		DiscountCents: body.DiscountCents, DiscountReason: body.DiscountReason,
 		PaidAmountCents: body.PaidAmountCents, ResidualDueDate: residualDue,
-		PaidAt: paidAt,
+		PaidAt:       paidAt,
+		LateFeeCents: body.LateFeeCents, LateInterestCents: body.LateInterestCents,
 	})
 	if err != nil {
 		errrespond.Write(c, err)
@@ -606,6 +628,9 @@ type financialEntryConfirmJSON struct {
 	PaidAmountCents *int64  `json:"paid_amount_cents"`
 	ResidualDueDate *string `json:"residual_due_date"` // YYYY-MM-DD; default: vencimento original
 	PaidAt          *string `json:"paid_at"`           // YYYY-MM-DD; default: agora
+	// Encargos por atraso pagos (somam ao devido).
+	LateFeeCents      *int64 `json:"late_fee_cents"`
+	LateInterestCents *int64 `json:"late_interest_cents"`
 }
 
 // ResizeInstallments responde POST /finance/entries/:id/resize-installments:
@@ -867,6 +892,9 @@ type financialEntrySettleJSON struct {
 	Notes           *string    `json:"notes"`
 	DiscountCents   *int64     `json:"discount_cents"`  // desconto obtido; abate do valor pago
 	DiscountReason  *string    `json:"discount_reason"` // slug do catálogo /finance/discount-reasons
+	// Encargos por atraso pagos; somam ao valor pago quando paid_amount_cents não vem.
+	LateFeeCents      *int64 `json:"late_fee_cents"`
+	LateInterestCents *int64 `json:"late_interest_cents"`
 }
 
 // Settle liquida o lançamento com forma de pagamento, valor e data.
@@ -902,12 +930,56 @@ func (h *FinancialEntryHandler) Settle(c *gin.Context) {
 		WorkspaceID: ws, ID: id, PaidAt: paidAt, PaidAmountCents: body.PaidAmountCents,
 		PaymentMethod: body.PaymentMethod, AccountID: body.AccountID, CardID: body.CardID, Notes: body.Notes,
 		DiscountCents: body.DiscountCents, DiscountReason: body.DiscountReason,
+		LateFeeCents: body.LateFeeCents, LateInterestCents: body.LateInterestCents,
 	})
 	if err != nil {
 		errrespond.Write(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, mapFinancialEntry(e))
+}
+
+// LateCharges responde GET /finance/entries/:id/late-charges?paid_at=YYYY-MM-DD:
+// cotação de multa e juros para pagar o lançamento nessa data (default:
+// hoje). Sem atraso, tudo zero. É a fonte única do cálculo — o admin só
+// exibe e deixa o usuário ajustar antes de liquidar.
+func (h *FinancialEntryHandler) LateCharges(c *gin.Context) {
+	ws, ok := middleware.WorkspaceID(c)
+	if !ok {
+		errrespond.Message(c, http.StatusBadRequest, errrespond.CodeWorkspaceRequired, "workspace inválido")
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "id inválido")
+		return
+	}
+	var paidAt *time.Time
+	if raw := c.Query("paid_at"); raw != "" {
+		t, perr := time.Parse(entryDateLayout, raw)
+		if perr != nil {
+			errrespond.Message(c, http.StatusBadRequest, errrespond.CodeBadRequest, "paid_at inválida (use YYYY-MM-DD)")
+			return
+		}
+		paidAt = &t
+	}
+	q, err := h.svc.LateChargeQuote(c.Request.Context(), ws, id, paidAt)
+	if err != nil {
+		errrespond.Write(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"due_date":                 q.DueDate.Format(entryDateLayout),
+		"paid_at":                  q.PaidAt.Format(entryDateLayout),
+		"days_late":                q.DaysLate,
+		"base_cents":               q.BaseCents,
+		"late_fee_bp":              q.LateFeeBP,
+		"late_interest_monthly_bp": q.LateInterestMonthlyBP,
+		"source":                   string(q.Source),
+		"late_fee_cents":           q.LateFeeCents,
+		"late_interest_cents":      q.LateInterestCents,
+		"total_cents":              q.TotalCents,
+	})
 }
 
 func (h *FinancialEntryHandler) Cancel(c *gin.Context) {

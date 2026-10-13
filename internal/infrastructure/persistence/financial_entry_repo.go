@@ -65,6 +65,10 @@ func (r *FinancialEntryRepository) Update(ctx context.Context, e *dom.FinancialE
 			"payment_card_id":             model.PaymentCardID,
 			"discount_cents":              model.DiscountCents,
 			"discount_reason":             model.DiscountReason,
+			"late_fee_bp":                 model.LateFeeBP,
+			"late_interest_monthly_bp":    model.LateInterestMonthlyBP,
+			"late_fee_cents":              model.LateFeeCents,
+			"late_interest_cents":         model.LateInterestCents,
 			"cancel_reason":               model.CancelReason,
 			"renegotiation_id":            model.RenegotiationID,
 			"settled_by_renegotiation_id": model.SettledByRenegotiationID,
@@ -233,6 +237,8 @@ func (r *FinancialEntryRepository) CascadeStatusToChildren(ctx context.Context, 
 		updates["payment_card_id"] = nil
 		updates["discount_cents"] = nil
 		updates["discount_reason"] = nil
+		updates["late_fee_cents"] = nil
+		updates["late_interest_cents"] = nil
 	}
 	res := r.db.WithContext(ctx).Model(&FinancialEntryModel{}).
 		Where("parent_id = ? AND workspace_id = ? AND status <> ?", parentID, workspaceID, "cancelada").
@@ -451,6 +457,10 @@ func financialEntryToModel(e *dom.FinancialEntry) FinancialEntryModel {
 		PaymentCardID:            e.PaymentCardID,
 		DiscountCents:            e.DiscountCents,
 		DiscountReason:           e.DiscountReason,
+		LateFeeBP:                e.LateFeeBP,
+		LateInterestMonthlyBP:    e.LateInterestMonthlyBP,
+		LateFeeCents:             e.LateFeeCents,
+		LateInterestCents:        e.LateInterestCents,
 		CancelReason:             e.CancelReason,
 		RenegotiationID:          e.RenegotiationID,
 		SettledByRenegotiationID: e.SettledByRenegotiationID,
@@ -523,6 +533,10 @@ func modelToFinancialEntry(m *FinancialEntryModel) *dom.FinancialEntry {
 		PaymentCardID:            m.PaymentCardID,
 		DiscountCents:            m.DiscountCents,
 		DiscountReason:           m.DiscountReason,
+		LateFeeBP:                m.LateFeeBP,
+		LateInterestMonthlyBP:    m.LateInterestMonthlyBP,
+		LateFeeCents:             m.LateFeeCents,
+		LateInterestCents:        m.LateInterestCents,
 		CancelReason:             m.CancelReason,
 		RenegotiationID:          m.RenegotiationID,
 		SettledByRenegotiationID: m.SettledByRenegotiationID,

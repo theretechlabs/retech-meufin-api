@@ -84,6 +84,10 @@ type FinancialEntryModel struct {
 	PaymentCardID            *uuid.UUID `gorm:"column:payment_card_id;type:uuid"`
 	DiscountCents            *int64     `gorm:"column:discount_cents"`
 	DiscountReason           *string    `gorm:"column:discount_reason;size:40"`
+	LateFeeBP                *int       `gorm:"column:late_fee_bp"`
+	LateInterestMonthlyBP    *int       `gorm:"column:late_interest_monthly_bp"`
+	LateFeeCents             *int64     `gorm:"column:late_fee_cents"`
+	LateInterestCents        *int64     `gorm:"column:late_interest_cents"`
 	CancelReason             *string    `gorm:"column:cancel_reason;size:30"`
 	RenegotiationID          *uuid.UUID `gorm:"column:renegotiation_id;type:uuid"`
 	SettledByRenegotiationID *uuid.UUID `gorm:"column:settled_by_renegotiation_id;type:uuid"`
