@@ -58,6 +58,7 @@ e diferente do host da API. `GET/HEAD/OPTIONS` e Bearer não passam por isso.
 | `SESSION_COOKIE_DOMAIN` | vazio | Vazio = host da API. Só preencher se admin e API estiverem em subdomínios diferentes sem proxy. |
 | `SESSION_TTL` | `12` | Validade absoluta da sessão (igual ao CashFlowfy). Precisa caber no `JWT_REFRESH_EXPIRATION_HOURS` do auth. |
 | `APP_APPLICATION_CODE` | `meufin` | `application_code` do `/v1/authenticate`. |
+| `GITHUB_TOKEN` (build) | — | Só no build do Railway: token fine-grained com leitura de conteúdo no `retech-auth-kit` (módulo privado). Sem ele, `go mod download` só acha versões já cacheadas no proxy público. |
 | `AUTH_API_BASE_URL` | — | Já existia (esqueci a senha). Agora também alimenta login/refresh/me e o proxy IAM. |
 
 ## Deploy same-origin (recomendado)
