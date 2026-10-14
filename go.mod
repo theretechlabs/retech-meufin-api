@@ -13,7 +13,7 @@ require (
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/pdfcpu/pdfcpu v0.13.0
 	github.com/redis/go-redis/v9 v9.21.0
-	github.com/theretechlabs/retech-authkit v0.1.0
+	github.com/theretechlabs/retech-authkit v0.1.1
 	golang.org/x/text v0.37.0
 	gorm.io/datatypes v1.2.7
 	gorm.io/driver/postgres v1.5.11
