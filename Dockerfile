@@ -1,16 +1,17 @@
-# syntax=docker/dockerfile:1
 FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 COPY go.mod go.sum ./
 # retech-authkit é módulo privado: o proxy público só tem versões antigas em
-# cache. O Railway expõe as variáveis do serviço como build secrets; com
-# GITHUB_TOKEN (fine-grained, só leitura de conteúdo no retech-auth-kit) o git
-# autentica. O token fica só no estágio builder, que não vai para a imagem.
+# cache. O Railway passa as variáveis do serviço como build args declarados
+# com ARG; com GITHUB_TOKEN (fine-grained, só leitura de conteúdo no
+# retech-auth-kit) o git autentica. O token vive só neste estágio builder, que
+# não vai para a imagem final. ARG em vez de --mount=type=secret: o builder
+# Metal do Railway não aceita RUN --mount.
+ARG GITHUB_TOKEN
 ENV GOPRIVATE=github.com/theretechlabs
-RUN --mount=type=secret,id=GITHUB_TOKEN,required=false \
-    if [ -s /run/secrets/GITHUB_TOKEN ]; then \
-      git config --global url."https://x-access-token:$(cat /run/secrets/GITHUB_TOKEN)@github.com/".insteadOf "https://github.com/"; \
+RUN if [ -n "$GITHUB_TOKEN" ]; then \
+      git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"; \
     fi \
     && go mod download \
     && rm -f /root/.gitconfig
