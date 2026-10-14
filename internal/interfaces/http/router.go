@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	appacc "github.com/retechfin/retechfin-api/internal/application/account"
 	appb "github.com/retechfin/retechfin-api/internal/application/budget"
+	appcat "github.com/retechfin/retechfin-api/internal/application/catalog"
 	appedu "github.com/retechfin/retechfin-api/internal/application/education"
 	appent "github.com/retechfin/retechfin-api/internal/application/entitlement"
 	appf "github.com/retechfin/retechfin-api/internal/application/finance"
@@ -73,6 +74,9 @@ type RouterDeps struct {
 	HealthPlanDocumentService     *apph.PlanDocumentService
 	ProfileService                *appacc.ProfileService
 
+	// Catálogo unificado de enums (GET /api/v1/catalogs) — docs/catalogs.md
+	CatalogService *appcat.Service
+
 	// Gateway de sessão (cookie HttpOnly) — docs/auth-session-gateway.md
 	SessionService *appsess.Service
 	SessionAuth    *authclient.Client // /auth/me (perfil) e login
@@ -137,6 +141,11 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		v1.POST("/me/avatar", meH.UploadAvatar)
 		v1.GET("/me/avatar-url", meH.AvatarURL)
 		v1.DELETE("/me/avatar", meH.DeleteAvatar)
+
+		// Catálogo unificado de enums com rótulo (todos os módulos, uma chamada,
+		// cacheável por ETag). Só autenticação: o admin de qualquer módulo o usa.
+		catalogH := handlers.NewCatalogHandler(d.CatalogService)
+		v1.GET("/catalogs", catalogH.All)
 
 		// Módulo legado (ledger/budget) — subjects retechfin.*
 		legacy := v1.Group("", middleware.RequireModule("retechfin"))

@@ -84,6 +84,7 @@ retech-auth-api (cifrado), que é validado via JWKS; o workspace vem do claim `t
 | Método | Caminho | Descrição |
 |--------|---------|-----------|
 | `GET` | `/health` | Saúde do processo |
+| `GET` | `/api/v1/catalogs` | Todos os enums de domínio com rótulo, numa chamada (ETag/304; ver `docs/catalogs.md`) |
 | `POST` | `/api/v1/accounts` | Criar conta financeira |
 | `GET` | `/api/v1/accounts` | Listar (paginação `?limit=&offset=`) |
 | `GET` | `/api/v1/accounts/:id` | Obter |

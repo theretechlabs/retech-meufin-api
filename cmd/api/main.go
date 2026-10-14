@@ -17,6 +17,7 @@ import (
 	"github.com/retechfin/retechfin-api/configs"
 	appacc "github.com/retechfin/retechfin-api/internal/application/account"
 	appb "github.com/retechfin/retechfin-api/internal/application/budget"
+	appcat "github.com/retechfin/retechfin-api/internal/application/catalog"
 	appedu "github.com/retechfin/retechfin-api/internal/application/education"
 	appent "github.com/retechfin/retechfin-api/internal/application/entitlement"
 	appf "github.com/retechfin/retechfin-api/internal/application/finance"
@@ -389,6 +390,9 @@ func main() {
 		HealthPlanService:             healthPlanSvc,
 		HealthPlanDocumentService:     healthPlanDocSvc,
 		ProfileService:                profileSvc,
+
+		// Estático (código Go); MustNew valida chaves/rótulos na partida.
+		CatalogService: appcat.MustNew(),
 
 		SessionService: sessionSvc,
 		SessionAuth:    authClient,
