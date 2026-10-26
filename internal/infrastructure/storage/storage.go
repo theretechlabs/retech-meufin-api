@@ -28,6 +28,7 @@ type Config struct {
 	SecretKey   string
 	Bucket      string
 	UseSSL      bool
+	Region      string // vazio = descoberta automática; "auto" para Cloudflare R2
 	MaxUploadMB int
 }
 
@@ -40,6 +41,7 @@ const defaultMaxUploadMB = 20
 //	MINIO_SECRET_KEY    secret key
 //	MINIO_BUCKET_HEALTH bucket de documentos de saúde
 //	MINIO_USE_SSL       true/false (default false)
+//	MINIO_REGION        região S3 (vazio = descoberta via GetBucketLocation; Cloudflare R2 exige "auto")
 //	HEALTH_MAX_UPLOAD_MB tamanho máximo de upload em MB (default 20)
 func ConfigFromEnv() Config {
 	maxMB := defaultMaxUploadMB
@@ -54,6 +56,7 @@ func ConfigFromEnv() Config {
 		SecretKey:   strings.TrimSpace(os.Getenv("MINIO_SECRET_KEY")),
 		Bucket:      strings.TrimSpace(os.Getenv("MINIO_BUCKET_HEALTH")),
 		UseSSL:      strings.EqualFold(strings.TrimSpace(os.Getenv("MINIO_USE_SSL")), "true"),
+		Region:      strings.TrimSpace(os.Getenv("MINIO_REGION")),
 		MaxUploadMB: maxMB,
 	}
 }
