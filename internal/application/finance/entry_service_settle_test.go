@@ -19,6 +19,10 @@ type fakeEntryRepo struct {
 		Status   dom.Status
 		PaidAt   *time.Time
 	}
+	dueCascadeCalls []struct {
+		ParentID uuid.UUID
+		DueDate  time.Time
+	}
 }
 
 func newFakeEntryRepo() *fakeEntryRepo {
@@ -213,6 +217,19 @@ func (f *fakeEntryRepo) CascadeStatusToChildren(_ context.Context, _, parentID u
 		Status   dom.Status
 		PaidAt   *time.Time
 	}{parentID, status, paidAt})
+	return nil
+}
+
+func (f *fakeEntryRepo) CascadeDueDateToChildren(_ context.Context, _, parentID uuid.UUID, due time.Time) error {
+	f.dueCascadeCalls = append(f.dueCascadeCalls, struct {
+		ParentID uuid.UUID
+		DueDate  time.Time
+	}{parentID, due})
+	for _, e := range f.entries {
+		if e.ParentID != nil && *e.ParentID == parentID && e.Status != dom.StatusCancelada {
+			e.DueDate = due
+		}
+	}
 	return nil
 }
 

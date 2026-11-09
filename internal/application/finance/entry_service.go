@@ -50,7 +50,16 @@ func statusPtr(st dom.Status) *dom.Status { return &st }
 
 // validateExpenseCategory garante que a categoria da despesa existe no
 // workspace (cadastro gerenciado) e que 'cartao' não é usado pelo usuário.
-func (s *FinancialEntryService) validateExpenseCategory(ctx context.Context, workspaceID uuid.UUID, kind dom.Kind, t *string) error {
+// orig é o lançamento antes da edição (nil na criação): a fatura criada pelo
+// sistema já nasce 'cartao' e permanece 'cartao' — não vira outra categoria
+// nem outro lançamento vira fatura.
+func (s *FinancialEntryService) validateExpenseCategory(ctx context.Context, workspaceID uuid.UUID, kind dom.Kind, t *string, orig *dom.FinancialEntry) error {
+	if orig != nil && orig.IsCardInvoice() {
+		if kind != dom.KindDebit || t == nil || *t != dom.CartaoCategorySlug {
+			return &dom.ValidationError{Msg: "fatura de cartão não muda de categoria nem de natureza"}
+		}
+		return nil
+	}
 	if kind != dom.KindDebit || t == nil || *t == "" {
 		return nil
 	}
@@ -196,7 +205,7 @@ func (s *FinancialEntryService) Create(ctx context.Context, in CreateEntryInput)
 	}
 	base.LateFeeBP, base.LateInterestMonthlyBP = normalizeLateTerms(in.LateFeeBP, in.LateInterestMonthlyBP)
 
-	if err := s.validateExpenseCategory(ctx, in.WorkspaceID, base.Kind, base.Type); err != nil {
+	if err := s.validateExpenseCategory(ctx, in.WorkspaceID, base.Kind, base.Type, nil); err != nil {
 		return nil, err
 	}
 
@@ -467,8 +476,13 @@ func (s *FinancialEntryService) Update(ctx context.Context, in UpdateEntryInput)
 	if err := e.Validate(); err != nil {
 		return nil, SeriesUpdateStats{}, err
 	}
-	if err := s.validateExpenseCategory(ctx, in.WorkspaceID, e.Kind, e.Type); err != nil {
+	if err := s.validateExpenseCategory(ctx, in.WorkspaceID, e.Kind, e.Type, &orig); err != nil {
 		return nil, SeriesUpdateStats{}, err
+	}
+	// Item de fatura: o vencimento é da fatura (o dinheiro sai no pagamento
+	// dela). Corrige-se na fatura e os itens acompanham.
+	if orig.ParentID != nil && !e.DueDate.Equal(orig.DueDate) {
+		return nil, SeriesUpdateStats{}, &dom.ValidationError{Msg: "compra de fatura vence com a fatura — altere o vencimento da fatura"}
 	}
 	if err := s.repo.Update(ctx, e); err != nil {
 		return nil, SeriesUpdateStats{}, err
@@ -476,6 +490,11 @@ func (s *FinancialEntryService) Update(ctx context.Context, in UpdateEntryInput)
 	// Vencimento alterado em previsto: a trilha preserva o original —
 	// é a evidência de prorrogação/antecipação que o modelo não tinha.
 	if !e.DueDate.Equal(orig.DueDate) {
+		if orig.IsCardInvoice() {
+			if err := s.repo.CascadeDueDateToChildren(ctx, e.WorkspaceID, e.ID, e.DueDate); err != nil {
+				return nil, SeriesUpdateStats{}, err
+			}
+		}
 		oldDue, newDue := orig.DueDate, e.DueDate
 		s.logEvent(ctx, dom.EntryEvent{
 			WorkspaceID: e.WorkspaceID,
@@ -1096,7 +1115,7 @@ func (s *FinancialEntryService) liquidate(ctx context.Context, workspaceID, id u
 	if residual < 0 {
 		return nil, &dom.ValidationError{Msg: "valor pago maior que o devido: informe juros/multa em vez de aumentar o valor pago"}
 	}
-	if residual > 0 && e.Type != nil && *e.Type == dom.CartaoCategorySlug {
+	if residual > 0 && e.IsCardInvoice() {
 		return nil, &dom.ValidationError{Msg: "pagamento parcial de fatura de cartão ainda não é suportado"}
 	}
 

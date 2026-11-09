@@ -246,6 +246,17 @@ func (r *FinancialEntryRepository) CascadeStatusToChildren(ctx context.Context, 
 	return mapFinanceErr(res.Error)
 }
 
+// CascadeDueDateToChildren alinha o vencimento dos itens ao da fatura.
+func (r *FinancialEntryRepository) CascadeDueDateToChildren(ctx context.Context, workspaceID, parentID uuid.UUID, dueDate time.Time) error {
+	res := r.db.WithContext(ctx).Model(&FinancialEntryModel{}).
+		Where("parent_id = ? AND workspace_id = ? AND status <> ? AND deleted_at IS NULL", parentID, workspaceID, "cancelada").
+		Updates(map[string]any{
+			"due_date":   dueDate,
+			"updated_at": time.Now().UTC(),
+		})
+	return mapFinanceErr(res.Error)
+}
+
 // ListInvoiceInstallments retorna compras parceladas dentro de faturas
 // (filhos com parcela preenchida) — insumo da projeção de compromissos.
 func (r *FinancialEntryRepository) ListInvoiceInstallments(ctx context.Context, workspaceID uuid.UUID) ([]dom.FinancialEntry, error) {
