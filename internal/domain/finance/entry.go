@@ -149,6 +149,12 @@ type FinancialEntry struct {
 }
 
 // Validate valida invariantes do lançamento.
+// IsCardInvoice identifica a fatura pai de cartão (type 'cartao'), criada
+// pelo sistema na importação; seus itens têm parent_id apontando para ela.
+func (e *FinancialEntry) IsCardInvoice() bool {
+	return e != nil && e.Type != nil && *e.Type == CartaoCategorySlug
+}
+
 func (e *FinancialEntry) Validate() error {
 	if e.WorkspaceID == uuid.Nil {
 		return &ValidationError{Msg: "workspace_id é obrigatório"}
@@ -286,6 +292,10 @@ type FinancialEntryRepository interface {
 	// (liquidar/cancelar a fatura liquida/cancela os itens juntos). paidAt só é aplicado
 	// quando status = realizada.
 	CascadeStatusToChildren(ctx context.Context, workspaceID, parentID uuid.UUID, status Status, paidAt *time.Time) error
+	// CascadeDueDateToChildren propaga o vencimento da fatura pai para os
+	// filhos não cancelados — a compra vence quando a fatura vence; o
+	// vencimento do item é derivado, nunca próprio.
+	CascadeDueDateToChildren(ctx context.Context, workspaceID, parentID uuid.UUID, dueDate time.Time) error
 	// ListRecurrenceFrontiers retorna, para cada grupo de recorrência (todas as
 	// workspaces), a ocorrência mais recente — o ponto de onde o extensor
 	// completa o horizonte rolling.
