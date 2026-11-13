@@ -179,6 +179,7 @@ var cardBankItems = []catalog.Item{
 	{Slug: "safra", Name: "Safra"},
 	{Slug: "sicoob", Name: "Sicoob"},
 	{Slug: "sicredi", Name: "Sicredi"},
+	{Slug: "unicred", Name: "Unicred"},
 	{Slug: "banrisul", Name: "Banrisul"},
 	{Slug: "bmg", Name: "BMG"},
 	{Slug: "bv", Name: "BV (Votorantim)"},
