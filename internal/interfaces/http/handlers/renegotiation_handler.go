@@ -17,10 +17,12 @@ import (
 // renegociação, quitação antecipada e troca de bem financiado.
 type RenegotiationHandler struct {
 	svc *app.RenegotiationService
+	// financings anexa o contrato de financiamento às dívidas do bem.
+	financings *app.FinancingService
 }
 
-func NewRenegotiationHandler(svc *app.RenegotiationService) *RenegotiationHandler {
-	return &RenegotiationHandler{svc: svc}
+func NewRenegotiationHandler(svc *app.RenegotiationService, financings *app.FinancingService) *RenegotiationHandler {
+	return &RenegotiationHandler{svc: svc, financings: financings}
 }
 
 type openChargeResponse struct {
@@ -622,8 +624,9 @@ func (h *RenegotiationHandler) Lineage(c *gin.Context) {
 	c.JSON(http.StatusOK, mapLineage(l))
 }
 
-// AssetDebts responde GET /finance/assets/:assetType/:assetId/debts — os
-// contratos que financiam o bem (com linhagem) e os eventos em que aparece.
+// AssetDebts responde GET /finance/assets/:assetType/:assetId/debts — as
+// dívidas que financiam o bem (com linhagem e, quando houver, o contrato de
+// financiamento) e os eventos em que aparece.
 func (h *RenegotiationHandler) AssetDebts(c *gin.Context) {
 	ws, ok := middleware.WorkspaceID(c)
 	if !ok {
@@ -641,9 +644,24 @@ func (h *RenegotiationHandler) AssetDebts(c *gin.Context) {
 		errrespond.Write(c, err)
 		return
 	}
+	contracts, err := h.financings.ListByAsset(c.Request.Context(), ws, assetType, assetID)
+	if err != nil {
+		errrespond.Write(c, err)
+		return
+	}
+	// O contrato aponta para a série raiz: é por ela que encontra a dívida.
+	byRoot := make(map[uuid.UUID]*dom.FinancingContract, len(contracts))
+	for i := range contracts {
+		byRoot[contracts[i].GroupID] = &contracts[i]
+	}
 	debts := make([]gin.H, 0, len(res.Debts))
 	for i := range res.Debts {
-		debts = append(debts, mapLineage(&res.Debts[i]))
+		d := mapLineage(&res.Debts[i])
+		d["contract"] = nil
+		if ct, ok := byRoot[res.Debts[i].RootGroupID]; ok {
+			d["contract"] = mapFinancing(ct)
+		}
+		debts = append(debts, d)
 	}
 	events := make([]gin.H, 0, len(res.Events))
 	for i := range res.Events {

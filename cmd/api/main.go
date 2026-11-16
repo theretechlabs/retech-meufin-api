@@ -256,6 +256,7 @@ func main() {
 	finCategorySvc := appf.NewExpenseCategoryService(finCategoryRepo)
 	renegRepo := persistence.NewRenegotiationRepository(db)
 	renegSvc := appf.NewRenegotiationService(financialEntryRepo, renegRepo, entryEventRepo, finCategoryRepo)
+	financingSvc := appf.NewFinancingService(persistence.NewFinancingContractRepository(db), financialEntrySvc, renegSvc, finCategorySvc)
 	creditCardSvc := appf.NewCreditCardService(creditCardRepo)
 	entitlementSvc := appent.NewService(entitlementRepo, redisCache)
 	finDocSvc := appf.NewFinanceDocumentService(finDocRepo, objStorage, storageCfg.MaxUploadMB)
@@ -367,6 +368,7 @@ func main() {
 		FinanceDocumentService:   finDocSvc,
 		FinanceExtractionService: finExtSvc,
 		RenegotiationService:     renegSvc,
+		FinancingService:         financingSvc,
 		FinanceAccountService:    finAccountSvc,
 		FinanceCategoryService:   finCategorySvc,
 		FinanceDashboardService:  finDashSvc,
@@ -448,6 +450,26 @@ func main() {
 				log.Warn("⚠️ Extensão de recorrências falhou", slog.String("error", err.Error()))
 			} else if n > 0 {
 				log.Info(fmt.Sprintf("🔁 Recorrências estendidas: %d ocorrências previstas criadas", n))
+			}
+		}
+		run()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			run()
+		}
+	}()
+
+	// Débito automático de financiamentos: liquida no vencimento as parcelas
+	// dos contratos debitados em conta, no boot e diariamente.
+	go func() {
+		run := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if n, err := financingSvc.SettleAutoDebits(ctx); err != nil {
+				log.Warn("⚠️ Débito automático de financiamentos falhou", slog.String("error", err.Error()))
+			} else if n > 0 {
+				log.Info(fmt.Sprintf("🏦 Débito automático: %d parcelas de financiamento liquidadas", n))
 			}
 		}
 		run()
