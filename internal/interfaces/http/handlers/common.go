@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,4 +43,16 @@ func boolQuery(c *gin.Context, name string) *bool {
 		return &v
 	}
 	return nil
+}
+
+// trimPtr apara um texto opcional; vazio vira nil (campo limpo).
+func trimPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := strings.TrimSpace(*s)
+	if v == "" {
+		return nil
+	}
+	return &v
 }

@@ -16,6 +16,14 @@ type FinancialEntryService struct {
 	repo       dom.FinancialEntryRepository
 	categories dom.ExpenseCategoryRepository
 	events     dom.EntryEventRepository
+	// seriesDeleted é avisado quando uma série inteira é excluída — quem
+	// guarda dados sobre a série (contrato de financiamento) remove os seus.
+	seriesDeleted func(ctx context.Context, workspaceID, groupID uuid.UUID) error
+}
+
+// OnSeriesDeleted registra o aviso de exclusão de série inteira.
+func (s *FinancialEntryService) OnSeriesDeleted(fn func(ctx context.Context, workspaceID, groupID uuid.UUID) error) {
+	s.seriesDeleted = fn
 }
 
 func NewFinancialEntryService(repo dom.FinancialEntryRepository, categories dom.ExpenseCategoryRepository, events ...dom.EntryEventRepository) *FinancialEntryService {
@@ -1012,6 +1020,11 @@ func (s *FinancialEntryService) Delete(ctx context.Context, workspaceID, id uuid
 			return nil, err
 		}
 		res.DeletedResiduals = n
+	}
+	if scope == DeleteScopeAll && s.seriesDeleted != nil {
+		if err := s.seriesDeleted(ctx, workspaceID, *anchor.RecurrenceGroupID); err != nil {
+			return nil, err
+		}
 	}
 	return res, nil
 }

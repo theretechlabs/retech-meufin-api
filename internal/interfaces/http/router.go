@@ -45,6 +45,7 @@ type RouterDeps struct {
 	ExamImportService        *apph.ExamImportService
 	IncomeSourceService      *appf.IncomeSourceService
 	FinancialEntryService    *appf.FinancialEntryService
+	FinancingService         *appf.FinancingService
 	CreditCardService        *appf.CreditCardService
 	FinanceDocumentService   *appf.FinanceDocumentService
 	FinanceExtractionService *appf.FinanceExtractionService
@@ -347,7 +348,7 @@ func NewRouter(d RouterDeps) *gin.Engine {
 
 		// Renegociação (novação): encerra as cobranças em aberto e cria a
 		// série nova, vinculando os dois lados ao mesmo evento.
-		renegH := handlers.NewRenegotiationHandler(d.RenegotiationService)
+		renegH := handlers.NewRenegotiationHandler(d.RenegotiationService, d.FinancingService)
 		finance.PUT("/installments/:groupId", entH.RenameInstallmentGroup)
 		finance.PUT("/installments/:groupId/asset", entH.LinkInstallmentGroupAsset)
 		finance.GET("/installments/:groupId/renegotiation-preview", renegH.Preview)
@@ -363,6 +364,14 @@ func NewRouter(d RouterDeps) *gin.Engine {
 		finance.POST("/debts/:groupId/payoff", renegH.Payoff)
 		finance.POST("/asset-swaps", renegH.AssetSwap)
 		finance.GET("/assets/:assetType/:assetId/debts", renegH.AssetDebts)
+
+		// Contrato de financiamento de um bem (imóvel/veículo): registra os
+		// dados do banco e gera a série de parcelas pelo parcelamento.
+		financingH := handlers.NewFinancingHandler(d.FinancingService)
+		finance.POST("/financings", financingH.Create)
+		finance.PUT("/financings/:id", financingH.Update)
+		finance.DELETE("/financings/:id", financingH.Delete)
+		finance.POST("/financings/:id/readjust", financingH.Readjust)
 
 		// Comprovantes de pagamento anexados a lançamentos.
 		receiptH := handlers.NewFinanceReceiptHandler(d.FinanceDocumentService, d.FinancialEntryService)
